@@ -209,6 +209,16 @@
                 
                 // Initialize shooting system
                 this.initShooting();
+                
+                // Vehicle damage system
+                this.vehicleMaxHealth = 200; // Increased from 100 to 200 HP
+                this.vehicleHealth = this.vehicleMaxHealth; // Current health
+                this.damagePerBullet = 10; // Damage per bullet hit
+                this.vehicleIsExploding = false; // Flag to track explosion state
+                this.vehicleCanBeDamaged = true; // Flag to prevent damage during explosion
+                
+                // Setup UI elements
+                this.setupUI();
             }
             
             onWindowResize() {
@@ -1983,6 +1993,9 @@
                     // Update control instructions for the new pedestrian controls
                     document.querySelector('.control-instructions').textContent = 
                         "Controls: W/S or Up/Down to move forward/backward | A/D or Left/Right to turn | E to enter vehicles | SPACE to shoot";
+                    
+                    // Show vehicle health display when not in vehicle
+                    setTimeout(() => this.updateVehicleHealthDisplay(), 100);
                 } else {
                     // Check distance to vehicle
                     const distance = this.pedestrian.position.distanceTo(this.player.position);
@@ -1996,6 +2009,9 @@
                         // Update control instructions
                         document.querySelector('.control-instructions').textContent = 
                             "Controls: WASD or Arrow Keys to move | E to exit vehicles | L to toggle lights | K to toggle day/night | SPACE for handbrake";
+                        
+                        // Hide vehicle health display when in vehicle
+                        setTimeout(() => this.updateVehicleHealthDisplay(), 100);
                     } else {
                         return; // Too far from vehicle
                     }
@@ -2946,6 +2962,50 @@
                         continue;
                     }
                     
+                    // Check for collisions with vehicles
+                    if (this.player && !this.isInVehicle && this.vehicleCanBeDamaged) {
+                        // IMPROVED: Check collision along the entire bullet line not just the endpoint
+                        // This fixes the issue where close-range shots weren't registering
+                        
+                        // Get bullet line start and end points
+                        const lineStart = bullet.startVector.clone();
+                        const lineEnd = bullet.endVector.clone();
+                        
+                        // Calculate bullet line direction and length
+                        const bulletDir = new THREE.Vector3().subVectors(lineEnd, lineStart).normalize();
+                        const bulletLength = lineStart.distanceTo(lineEnd);
+                        
+                        // Check multiple points along the bullet's path (not just the tip)
+                        const checkPoints = 5; // Check 5 points along the bullet's path
+                        let hitCar = false;
+                        
+                        for (let p = 0; p <= checkPoints; p++) {
+                            // Get point at different positions along the bullet line
+                            const fraction = p / checkPoints;
+                            const checkPoint = new THREE.Vector3().copy(lineStart).addScaledVector(bulletDir, bulletLength * fraction);
+                            
+                            // Check distance from this point to the car
+                            const distance = checkPoint.distanceTo(this.player.position);
+                            
+                            // If bullet is close to vehicle
+                            if (distance < 2.5) { // Vehicle collision radius
+                                // Create impact effect
+                                this.createBulletVehicleImpact(checkPoint);
+                                
+                                // Damage vehicle
+                                this.damageVehicle(this.damagePerBullet);
+                                
+                                // Remove bullet from scene and array
+                                this.scene.remove(bullet.mesh);
+                                this.bullets.splice(i, 1);
+                                hitCar = true;
+                                break;
+                            }
+                        }
+                        
+                        if (hitCar) continue;
+                    }
+                    
                     // Check for collisions with buildings - use the front point of the bullet
                     const bulletFrontX = bullet.endVector.x;
                     const bulletFrontZ = bullet.endVector.z;
@@ -3029,6 +3089,838 @@
             // Check if player is on foot (not in vehicle)
             isPlayerOnFoot() {
                 return !this.isInVehicle && this.pedestrian !== null;
+            }
+            
+            // Function to create a vehicle explosion effect
+            createVehicleExplosion() {
+                if (this.vehicleIsExploding) return; // Prevent multiple explosions
+                
+                this.vehicleIsExploding = true;
+                this.vehicleCanBeDamaged = false;
+                
+                // Store camera initial position for shake effect
+                const originalCameraPosition = this.camera.position.clone();
+                
+                // Get vehicle position
+                const vehiclePosition = this.player.position.clone();
+                
+                // PHASE 1: Initial explosion flash - BIGGER and BRIGHTER
+                const explosionLight = new THREE.PointLight(0xffbb00, 25, 80, 2); // Even brighter and larger radius
+                explosionLight.position.copy(vehiclePosition);
+                explosionLight.position.y += 2;
+                this.scene.add(explosionLight);
+                
+                // PHASE 2: Primary explosion particles - MORE particles, LARGER, WIDER SPREAD
+                const particleCount = 500; // Significantly more particles
+                const explosionGeometry = new THREE.BufferGeometry();
+                const explosionMaterial = new THREE.PointsMaterial({
+                    color: 0xff5500,
+                    size: 1.5, // Larger particles
+                    blending: THREE.AdditiveBlending,
+                    transparent: true,
+                    opacity: 1.0
+                });
+                
+                const positions = new Float32Array(particleCount * 3);
+                const velocities = [];
+                const sizes = new Float32Array(particleCount);
+                const colors = [];
+                const particleLifetimes = [];
+                
+                // Create color array for flame-like gradient
+                const particleColors = [
+                    new THREE.Color(0xffff00), // Bright yellow
+                    new THREE.Color(0xff8800), // Orange
+                    new THREE.Color(0xff4400), // Dark orange
+                    new THREE.Color(0xff0000), // Red
+                    new THREE.Color(0xbb0000)  // Dark red
+                ];
+                
+                for (let i = 0; i < particleCount; i++) {
+                    // Start at explosion center with wider random offset
+                    positions[i * 3] = vehiclePosition.x + (Math.random() - 0.5) * 1.0; // Wider initial spread
+                    positions[i * 3 + 1] = vehiclePosition.y + Math.random() * 1.0;     // Higher initial position
+                    positions[i * 3 + 2] = vehiclePosition.z + (Math.random() - 0.5) * 1.0; // Wider initial spread
+                    
+                    // Explosion force vector - FASTER and more spread
+                    const angle = Math.random() * Math.PI * 2;
+                    const height = Math.random() * Math.PI - Math.PI/2; // Angle from horizontal
+                    const speed = 15 + Math.random() * 35; // Even higher speeds for bigger explosion
+                    
+                    // Convert spherical to cartesian coordinates for more realistic 3D explosion
+                    const velocity = new THREE.Vector3(
+                        Math.cos(angle) * Math.cos(height) * speed,
+                        Math.sin(height) * speed,
+                        Math.sin(angle) * Math.cos(height) * speed
+                    );
+                    
+                    velocities.push(velocity);
+                    
+                    // Random size for particles - larger
+                    sizes[i] = 0.8 + Math.random() * 1.8; // Even larger particles
+                    
+                    // Random color from our gradient
+                    const colorIndex = Math.floor(Math.random() * particleColors.length);
+                    colors.push(particleColors[colorIndex].r, particleColors[colorIndex].g, particleColors[colorIndex].b);
+                    
+                    // Very short lifetimes for faster fading
+                    particleLifetimes.push(0.2 + Math.random() * 0.8); // Much shorter lifetime (0.2-1.0 seconds)
+                }
+                
+                explosionGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+                explosionGeometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
+                
+                // Add colors attribute for better visual effect
+                explosionGeometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+                explosionMaterial.vertexColors = true;
+                
+                const explosionParticles = new THREE.Points(explosionGeometry, explosionMaterial);
+                this.scene.add(explosionParticles);
+                
+                // PHASE 3: Fire effect - more sprites, much bigger initially, but fades faster
+                const fireCount = 60; // Even more fire sprites
+                const fireParticles = new THREE.Group();
+                const fireTexture = this.createFireTexture();
+                
+                const fireSprites = [];
+                const fireSizes = [];
+                const firePositions = [];
+                const fireVelocities = [];
+                const fireRotationSpeeds = [];
+                
+                for (let i = 0; i < fireCount; i++) {
+                    const fireSpriteMaterial = new THREE.SpriteMaterial({
+                        map: fireTexture,
+                        color: 0xffff80,
+                        transparent: true,
+                        blending: THREE.AdditiveBlending
+                    });
+                    
+                    const sprite = new THREE.Sprite(fireSpriteMaterial);
+                    const size = 3.0 + Math.random() * 5.0; // Significantly larger flames
+                    sprite.scale.set(size, size, 1.0);
+                    
+                    // Random position near explosion center - much wider spread
+                    const pos = new THREE.Vector3(
+                        vehiclePosition.x + (Math.random() - 0.5) * 6, // Double spread
+                        vehiclePosition.y + Math.random() * 1.5,      // Higher position
+                        vehiclePosition.z + (Math.random() - 0.5) * 6  // Double spread
+                    );
+                    sprite.position.copy(pos);
+                    
+                    // Velocity - mainly upward with some spread - faster
+                    const vel = new THREE.Vector3(
+                        (Math.random() - 0.5) * 6,
+                        6 + Math.random() * 12, // Much faster upward
+                        (Math.random() - 0.5) * 6
+                    );
+                    
+                    fireSprites.push(sprite);
+                    fireSizes.push(size);
+                    firePositions.push(pos);
+                    fireVelocities.push(vel);
+                    fireRotationSpeeds.push((Math.random() - 0.5) * 6); // Faster rotation
+                    
+                    fireParticles.add(sprite);
+                }
+                
+                this.scene.add(fireParticles);
+                
+                // PHASE 4: Smoke particles - begins immediately, more intense, fades faster
+                const smokeCount = 70; // More smoke particles
+                const smokeGroup = new THREE.Group();
+                const smokeTexture = this.createSmokeTexture();
+                
+                const smokeSprites = [];
+                const smokeScales = [];
+                const smokePositions = [];
+                const smokeVelocities = [];
+                const smokeRotationSpeeds = [];
+                const smokeLifetimes = [];
+                const smokeStartTimes = [];
+                
+                for (let i = 0; i < smokeCount; i++) {
+                    const smokeMaterial = new THREE.SpriteMaterial({
+                        map: smokeTexture,
+                        color: 0x222222,
+                        transparent: true,
+                        opacity: 0.8 // More opaque initially
+                    });
+                    
+                    const sprite = new THREE.Sprite(smokeMaterial);
+                    const scale = 4 + Math.random() * 6; // Even larger scale for smoke
+                    sprite.scale.set(scale, scale, 1.0);
+                    
+                    // Start position - much wider spread
+                    const startDelay = Math.random() * 0.3; // Very short delays
+                    const pos = new THREE.Vector3(
+                        vehiclePosition.x + (Math.random() - 0.5) * 8, // Wider spread
+                        vehiclePosition.y + Math.random() * 2.0,      // Higher initial position
+                        vehiclePosition.z + (Math.random() - 0.5) * 8  // Wider spread
+                    );
+                    sprite.position.copy(pos);
+                    
+                    // Velocity - faster upward drift
+                    const vel = new THREE.Vector3(
+                        (Math.random() - 0.5) * 4,
+                        3 + Math.random() * 6, // Even faster rise
+                        (Math.random() - 0.5) * 4
+                    );
+                    
+                    smokeSprites.push(sprite);
+                    smokeScales.push(scale);
+                    smokePositions.push(pos);
+                    smokeVelocities.push(vel);
+                    smokeRotationSpeeds.push((Math.random() - 0.5) * 1.5); // Faster rotation
+                    smokeLifetimes.push(1.5 + Math.random() * 1.5); // Much shorter life (1.5-3 seconds)
+                    smokeStartTimes.push(startDelay);
+                    
+                    // Start immediately visible
+                    smokeMaterial.opacity = 0.5;
+                    
+                    smokeGroup.add(sprite);
+                }
+                
+                this.scene.add(smokeGroup);
+                
+                // PHASE 5: Debris particles - more and larger, flung further
+                const debrisCount = 40; // More debris pieces
+                const debrisGeometry = new THREE.BoxGeometry(0.6, 0.6, 0.6); // Larger debris
+                const debrisMaterial = new THREE.MeshStandardMaterial({
+                    color: 0x333333,
+                    roughness: 0.7,
+                    metalness: 0.5
+                });
+                
+                const debrisMeshes = [];
+                const debrisVelocities = [];
+                const debrisRotations = [];
+                
+                for (let i = 0; i < debrisCount; i++) {
+                    const debris = new THREE.Mesh(debrisGeometry, debrisMaterial);
+                    debris.position.copy(vehiclePosition);
+                    debris.position.y += 0.5; // Start slightly above car
+                    
+                    // Random velocity - much stronger and faster
+                    const velocity = new THREE.Vector3(
+                        (Math.random() - 0.5) * 30, // 50% higher horizontal speed
+                        12 + Math.random() * 20,    // Much higher initial upward velocity
+                        (Math.random() - 0.5) * 30  // 50% higher horizontal speed
+                    );
+                    
+                    // Random rotation speed - faster
+                    const rotation = new THREE.Vector3(
+                        Math.random() * 15,
+                        Math.random() * 15,
+                        Math.random() * 15
+                    );
+                    
+                    debrisMeshes.push(debris);
+                    debrisVelocities.push(velocity);
+                    debrisRotations.push(rotation);
+                    
+                    this.scene.add(debris);
+                }
+                
+                // Play explosion sound with more dramatic effect
+                this.playEnhancedExplosionSound();
+                
+                // Apply damage/deformation effect to vehicle
+                if (this.player) {
+                    // Find all meshes in the player group and modify them
+                    this.player.traverse((child) => {
+                        if (child.isMesh) {
+                            // Darken and add burn effect
+                            if (child.material) {
+                                child.material.color.set(0x222222);
+                                child.material.emissive.set(0x330000);
+                                child.material.roughness = 0.9; // More rough for burned look
+                                
+                                // Add more extreme deformation
+                                if (child.geometry) {
+                                    const positions = child.geometry.attributes.position.array;
+                                    for (let i = 0; i < positions.length; i += 3) {
+                                        // Apply more extreme random deformation
+                                        positions[i] += (Math.random() - 0.5) * 0.6; // 50% more deformation
+                                        positions[i+1] += (Math.random() - 0.5) * 0.6;
+                                        positions[i+2] += (Math.random() - 0.5) * 0.6;
+                                    }
+                                    child.geometry.attributes.position.needsUpdate = true;
+                                }
+                            }
+                        }
+                    });
+                }
+                
+                // Camera shake effect - stronger but shorter
+                let shakeIntensity = 1.2; // Higher initial shake intensity
+                let shakeDuration = 1.0; // Shorter duration in seconds
+                let shakeStartTime = Date.now();
+                
+                // Animation loop for the explosion - ADJUSTED TIMING
+                let explosionTime = 0;
+                const explosionDuration = 3.5; // Slightly longer duration, but with much faster fade
+                
+                const updateExplosion = (delta) => {
+                    explosionTime += delta;
+                    
+                    // Apply camera shake if within shake duration
+                    if ((Date.now() - shakeStartTime) / 1000 < shakeDuration) {
+                        // Calculate remaining shake intensity (decreases more quickly)
+                        const remainingShake = shakeIntensity * Math.pow(1 - (Date.now() - shakeStartTime) / (shakeDuration * 1000), 2);
+                        
+                        // Apply random offset to camera (larger shake)
+                        this.camera.position.x = originalCameraPosition.x + (Math.random() - 0.5) * remainingShake * 3;
+                        this.camera.position.z = originalCameraPosition.z + (Math.random() - 0.5) * remainingShake * 3;
+                        this.camera.position.y = originalCameraPosition.y + (Math.random() - 0.5) * remainingShake * 1.5;
+                    } else {
+                        // Reset camera position after shake
+                        this.camera.position.copy(originalCameraPosition);
+                    }
+                    
+                    // Update primary explosion particles - FASTER FADE
+                    const positions = explosionParticles.geometry.attributes.position.array;
+                    const sizes = explosionParticles.geometry.attributes.size.array;
+                    
+                    for (let i = 0; i < particleCount; i++) {
+                        // Apply velocity with stronger gravity
+                        velocities[i].y -= 20.0 * delta; // Higher gravity for faster fall
+                        
+                        // Faster slowdown (air resistance)
+                        velocities[i].x *= 0.92;
+                        velocities[i].y *= 0.92;
+                        velocities[i].z *= 0.92;
+                        
+                        // Update position
+                        positions[i * 3] += velocities[i].x * delta;
+                        positions[i * 3 + 1] += velocities[i].y * delta;
+                        positions[i * 3 + 2] += velocities[i].z * delta;
+                        
+                        // Shrink particles MUCH faster
+                        if (explosionTime < particleLifetimes[i]) {
+                            sizes[i] *= 0.93; // Faster shrink
+                        } else {
+                            sizes[i] = 0; // Hide when lifetime is over
+                        }
+                    }
+                    
+                    // Overall opacity fade - much faster
+                    if (explosionTime > 0.4) { // Start fading after 0.4 seconds
+                        const particleFade = Math.max(0, 1 - ((explosionTime - 0.4) / 0.8)); // Fade out over 0.8 seconds
+                        explosionMaterial.opacity = particleFade;
+                    }
+                    
+                    // Update buffers
+                    explosionParticles.geometry.attributes.position.needsUpdate = true;
+                    explosionParticles.geometry.attributes.size.needsUpdate = true;
+                    
+                    // Update fire sprites - fade MUCH faster
+                    for (let i = 0; i < fireSprites.length; i++) {
+                        const sprite = fireSprites[i];
+                        
+                        // Rise and slow down faster
+                        fireVelocities[i].y -= 1.5 * delta; // Faster deceleration
+                        fireVelocities[i].x *= 0.85; // Faster lateral slowdown
+                        fireVelocities[i].z *= 0.85;
+                        
+                        sprite.position.x += fireVelocities[i].x * delta;
+                        sprite.position.y += fireVelocities[i].y * delta;
+                        sprite.position.z += fireVelocities[i].z * delta;
+                        
+                        // Rotate sprite faster
+                        sprite.material.rotation += fireRotationSpeeds[i] * delta;
+                        
+                        // Fade out MUCH more quickly
+                        const fadeStart = 0.2; // Start fading almost immediately
+                        if (explosionTime > fadeStart) {
+                            const fadeFactor = 1.0 - Math.min(1.0, (explosionTime - fadeStart) / 0.5); // Fade over just 0.5 seconds
+                            sprite.material.opacity = fadeFactor;
+                            sprite.scale.x = fireSizes[i] * fadeFactor;
+                            sprite.scale.y = fireSizes[i] * fadeFactor;
+                        }
+                    }
+                    
+                    // Update smoke sprites - faster expansion but quicker fade
+                    for (let i = 0; i < smokeSprites.length; i++) {
+                        const sprite = smokeSprites[i];
+                        const adjustedTime = explosionTime - smokeStartTimes[i];
+                        
+                        if (adjustedTime > 0) {
+                            // Move smoke upward with faster physics
+                            smokeVelocities[i].y *= 0.94; // Slightly faster deceleration
+                            sprite.position.x += smokeVelocities[i].x * delta;
+                            sprite.position.y += smokeVelocities[i].y * delta;
+                            sprite.position.z += smokeVelocities[i].z * delta;
+                            
+                            // Rotate sprite
+                            sprite.material.rotation += smokeRotationSpeeds[i] * delta;
+                            
+                            // Fade in faster, then out faster
+                            const fadeInTime = 0.1; // Nearly instant fade in
+                            const lifeTime = smokeLifetimes[i];
+                            
+                            if (adjustedTime < fadeInTime) {
+                                // Fade in faster
+                                sprite.material.opacity = adjustedTime / fadeInTime * 0.8;
+                            } else if (adjustedTime > lifeTime - 0.5) {
+                                // Fade out in last 0.5 second (was 1.0)
+                                sprite.material.opacity = 0.8 * (1.0 - (adjustedTime - (lifeTime - 0.5)) / 0.5);
+                            }
+                            
+                            // Expand smoke faster
+                            const expandFactor = Math.min(1.0 + adjustedTime * 1.5, 4.0); // Even faster expansion
+                            sprite.scale.x = smokeScales[i] * expandFactor;
+                            sprite.scale.y = smokeScales[i] * expandFactor;
+                        }
+                    }
+                    
+                    // Update debris particles with faster physics
+                    for (let i = 0; i < debrisMeshes.length; i++) {
+                        const debris = debrisMeshes[i];
+                        
+                        // Apply stronger gravity
+                        debrisVelocities[i].y -= 25.0 * delta; // Stronger gravity
+                        
+                        // Update position
+                        debris.position.x += debrisVelocities[i].x * delta;
+                        debris.position.y += debrisVelocities[i].y * delta;
+                        debris.position.z += debrisVelocities[i].z * delta;
+                        
+                        // Update rotation - faster
+                        debris.rotation.x += debrisRotations[i].x * delta;
+                        debris.rotation.y += debrisRotations[i].y * delta;
+                        debris.rotation.z += debrisRotations[i].z * delta;
+                        
+                        // Ground collision
+                        if (debris.position.y < 0) {
+                            debris.position.y = 0;
+                            debrisVelocities[i].y = -debrisVelocities[i].y * 0.2; // Less bounce
+                            debrisVelocities[i].x *= 0.6; // More friction
+                            debrisVelocities[i].z *= 0.6;
+                            
+                            // Stop very small bounces
+                            if (Math.abs(debrisVelocities[i].y) < 3.0) {
+                                debrisVelocities[i].y = 0;
+                            }
+                        }
+                    }
+                    
+                    // Fade explosion light - much faster, brighter initial flash
+                    if (explosionTime < 0.08) {
+                        explosionLight.intensity = 25; // Full intensity for a very short time
+                    } else if (explosionTime < 0.25) {
+                        explosionLight.intensity = 25 * (1 - (explosionTime - 0.08) / 0.17);
+                    } else {
+                        explosionLight.intensity = 0;
+                    }
+                    
+                    // Continue animation if still within duration
+                    if (explosionTime < explosionDuration) {
+                        requestAnimationFrame((timestamp) => {
+                            const newDelta = Math.min(0.1, timestamp - lastTimestamp) / 1000;
+                            lastTimestamp = timestamp;
+                            updateExplosion(newDelta);
+                        });
+                    } else {
+                        // Clean up
+                        this.scene.remove(explosionParticles);
+                        this.scene.remove(fireParticles);
+                        this.scene.remove(smokeGroup);
+                        this.scene.remove(explosionLight);
+                        
+                        // Remove debris
+                        for (const debris of debrisMeshes) {
+                            this.scene.remove(debris);
+                        }
+                        
+                        // Reset camera position
+                        this.camera.position.copy(originalCameraPosition);
+                        
+                        // Reset vehicle health after explosion animation
+                        setTimeout(() => {
+                            this.resetVehicleAfterExplosion();
+                        }, 500); // Short delay before respawning
+                    }
+                };
+                
+                // Start animation
+                let lastTimestamp = performance.now();
+                requestAnimationFrame((timestamp) => {
+                    lastTimestamp = timestamp;
+                    updateExplosion(0.016); // Start with a small delta
+                });
+            }
+            
+            // Create a circular texture for fire particles
+            createFireTexture() {
+                const canvas = document.createElement('canvas');
+                canvas.width = 64;
+                canvas.height = 64;
+                const context = canvas.getContext('2d');
+                
+                // Create radial gradient
+                const gradient = context.createRadialGradient(32, 32, 0, 32, 32, 32);
+                gradient.addColorStop(0, 'rgba(255, 255, 255, 1)');
+                gradient.addColorStop(0.3, 'rgba(255, 200, 0, 0.8)');
+                gradient.addColorStop(0.7, 'rgba(255, 50, 0, 0.5)');
+                gradient.addColorStop(1, 'rgba(255, 0, 0, 0)');
+                
+                context.fillStyle = gradient;
+                context.fillRect(0, 0, 64, 64);
+                
+                const texture = new THREE.CanvasTexture(canvas);
+                return texture;
+            }
+            
+            // Create a smoke texture
+            createSmokeTexture() {
+                const canvas = document.createElement('canvas');
+                canvas.width = 64;
+                canvas.height = 64;
+                const context = canvas.getContext('2d');
+                
+                // Create radial gradient for smoke
+                const gradient = context.createRadialGradient(32, 32, 0, 32, 32, 32);
+                gradient.addColorStop(0, 'rgba(150, 150, 150, 0.9)');
+                gradient.addColorStop(0.5, 'rgba(100, 100, 100, 0.5)');
+                gradient.addColorStop(1, 'rgba(50, 50, 50, 0)');
+                
+                context.fillStyle = gradient;
+                context.fillRect(0, 0, 64, 64);
+                
+                // Add some noise to the smoke texture
+                for (let i = 0; i < 400; i++) {
+                    const x = Math.random() * 64;
+                    const y = Math.random() * 64;
+                    const radius = Math.random() * 2;
+                    
+                    context.beginPath();
+                    context.arc(x, y, radius, 0, Math.PI * 2);
+                    context.fillStyle = `rgba(200, 200, 200, ${Math.random() * 0.2})`;
+                    context.fill();
+                }
+                
+                const texture = new THREE.CanvasTexture(canvas);
+                return texture;
+            }
+            
+            // Enhanced explosion sound
+            playEnhancedExplosionSound() {
+                try {
+                    if (!this.audioContext) {
+                        this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                    }
+                    
+                    const ctx = this.audioContext;
+                    
+                    // 1. Initial blast sound - layered noise bursts
+                    const createBlastSound = () => {
+                        // Create burst noise
+                        const burstSize = ctx.sampleRate * 0.7; // Longer duration
+                        const burstBuffer = ctx.createBuffer(1, burstSize, ctx.sampleRate);
+                        const burstData = burstBuffer.getChannelData(0);
+                        
+                        // Fill with shaped noise - more complex envelope
+                        for (let i = 0; i < burstSize; i++) {
+                            const t = i / burstSize;
+                            // Multi-stage envelope for more realistic explosion
+                            let envelope;
+                            if (t < 0.1) {
+                                // Sharp attack
+                                envelope = t * 10;
+                            } else if (t < 0.3) {
+                                // Initial decay
+                                envelope = 1.0 - 0.3 * ((t - 0.1) / 0.2);
+                            } else {
+                                // Long tail
+                                envelope = 0.7 * Math.exp(-3 * (t - 0.3));
+                            }
+                            
+                            // Add some low-frequency modulation for rumble
+                            const rumble = 0.2 * Math.sin(t * 20);
+                            
+                            burstData[i] = (Math.random() * 2 - 1) * envelope + rumble * envelope;
+                        }
+                        
+                        const blastSource = ctx.createBufferSource();
+                        blastSource.buffer = burstBuffer;
+                        
+                        // Create multi-band processing for more realistic explosion
+                        // Low-end boost
+                        const lowpass = ctx.createBiquadFilter();
+                        lowpass.type = 'lowpass';
+                        lowpass.frequency.value = 200;
+                        lowpass.Q.value = 1.0;
+                        
+                        // Mid-range presence
+                        const bandpass = ctx.createBiquadFilter();
+                        bandpass.type = 'bandpass';
+                        bandpass.frequency.value = 800;
+                        bandpass.Q.value = 0.8;
+                        
+                        // High-end air/debris sounds
+                        const highpass = ctx.createBiquadFilter();
+                        highpass.type = 'highpass';
+                        highpass.frequency.value = 3000;
+                        highpass.Q.value = 0.5;
+                        
+                        // Gain nodes for multi-band mixing
+                        const lowGain = ctx.createGain();
+                        lowGain.gain.value = 0.7;
+                        
+                        const midGain = ctx.createGain();
+                        midGain.gain.value = 0.3;
+                        
+                        const highGain = ctx.createGain();
+                        highGain.gain.value = 0.2;
+                        
+                        // Master gain
+                        const masterGain = ctx.createGain();
+                        masterGain.gain.value = 0.7;
+                        
+                        // Compression for that explosive punch
+                        const compressor = ctx.createDynamicsCompressor();
+                        compressor.threshold.value = -10;
+                        compressor.knee.value = 10;
+                        compressor.ratio.value = 12;
+                        compressor.attack.value = 0.003;
+                        compressor.release.value = 0.25;
+                        
+                        // Connect multi-band path
+                        blastSource.connect(lowpass);
+                        blastSource.connect(bandpass);
+                        blastSource.connect(highpass);
+                        
+                        lowpass.connect(lowGain);
+                        bandpass.connect(midGain);
+                        highpass.connect(highGain);
+                        
+                        lowGain.connect(masterGain);
+                        midGain.connect(masterGain);
+                        highGain.connect(masterGain);
+                        
+                        masterGain.connect(compressor);
+                        compressor.connect(ctx.destination);
+                        
+                        return blastSource;
+                    };
+                    
+                    // 2. Deep rumble/sub bass
+                    const createRumble = () => {
+                        const oscillator = ctx.createOscillator();
+                        oscillator.type = 'sine';
+                        oscillator.frequency.value = 40; // Very low frequency
+                        
+                        const gainNode = ctx.createGain();
+                        gainNode.gain.setValueAtTime(0, ctx.currentTime);
+                        gainNode.gain.linearRampToValueAtTime(0.8, ctx.currentTime + 0.1); // Quick ramp up
+                        gainNode.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 3.0); // Long fade out
+                        
+                        // Add slight pitch drop for more realism
+                        oscillator.frequency.setValueAtTime(60, ctx.currentTime);
+                        oscillator.frequency.exponentialRampToValueAtTime(30, ctx.currentTime + 3.0);
+                        
+                        oscillator.connect(gainNode);
+                        gainNode.connect(ctx.destination);
+                        
+                        return oscillator;
+                    };
+                    
+                    // 3. Secondary crackle/debris sounds slightly delayed
+                    const createCrackle = () => {
+                        const bufferSize = ctx.sampleRate * 2; // 2 seconds of crackle
+                        const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+                        const data = buffer.getChannelData(0);
+                        
+                        // Generate random crackle that gets less frequent over time
+                        for (let i = 0; i < bufferSize; i++) {
+                            const t = i / bufferSize;
+                            // Random crackle with decreasing frequency
+                            if (Math.random() < 0.01 * (1 - t)) {
+                                // Create short crackle that lasts a few samples
+                                const crackleLength = Math.floor(Math.random() * 100) + 50;
+                                const amplitude = Math.random() * 0.5;
+                                
+                                for (let j = 0; j < crackleLength && (i + j) < bufferSize; j++) {
+                                    // Exponential decay for each crackle
+                                    const decay = Math.exp(-j / (crackleLength * 0.3));
+                                    data[i + j] = (Math.random() * 2 - 1) * amplitude * decay;
+                                }
+                                
+                                // Skip ahead
+                                i += crackleLength;
+                            } else {
+                                data[i] = 0;
+                            }
+                        }
+                        
+                        const crackleSource = ctx.createBufferSource();
+                        crackleSource.buffer = buffer;
+                        
+                        const highpassFilter = ctx.createBiquadFilter();
+                        highpassFilter.type = 'highpass';
+                        highpassFilter.frequency.value = 2000;
+                        
+                        const gainNode = ctx.createGain();
+                        gainNode.gain.value = 0.3;
+                        
+                        crackleSource.connect(highpassFilter);
+                        highpassFilter.connect(gainNode);
+                        gainNode.connect(ctx.destination);
+                        
+                        return {
+                            source: crackleSource,
+                            start: function(time) {
+                                this.source.start(time);
+                            }
+                        };
+                    };
+                    
+                    // Play all explosion components
+                    const blastSound = createBlastSound();
+                    blastSound.start();
+                    
+                    const rumble = createRumble();
+                    rumble.start();
+                    
+                    // Delayed crackle
+                    const crackle = createCrackle();
+                    setTimeout(() => {
+                        crackle.start(ctx.currentTime);
+                    }, 100);
+                    
+                } catch (e) {
+                    console.error("Audio error:", e);
+                }
+            }
+            
+            // Function to create bullet impact effect on vehicle
+            createBulletVehicleImpact(position) {
+                // Small spark
+                const impactLight = new THREE.PointLight(0xffff00, 0.6, 1.5);
+                impactLight.position.copy(position);
+                this.scene.add(impactLight);
+                
+                // Bullet hole effect can be added here if desired
+                
+                // Remove after a short duration
+                setTimeout(() => {
+                    this.scene.remove(impactLight);
+                }, 100);
+                
+                // Play a metallic ping sound
+                this.playBulletHitSound();
+            }
+            
+            // Play sound when bullet hits vehicle
+            playBulletHitSound() {
+                try {
+                    if (!this.audioContext) {
+                        this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                    }
+                    
+                    const ctx = this.audioContext;
+                    
+                    // Create oscillator for metallic ping
+                    const oscillator = ctx.createOscillator();
+                    oscillator.type = 'sine';
+                    oscillator.frequency.value = 1200; // High pitched ping
+                    
+                    const gainNode = ctx.createGain();
+                    gainNode.gain.setValueAtTime(0.2, ctx.currentTime);
+                    gainNode.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.1);
+                    
+                    oscillator.connect(gainNode);
+                    gainNode.connect(ctx.destination);
+                    
+                    oscillator.start();
+                    oscillator.stop(ctx.currentTime + 0.1);
+                } catch (e) {
+                    console.error("Audio error:", e);
+                }
+            }
+            
+            // Function to damage vehicle and check for destruction
+            damageVehicle(amount) {
+                if (!this.vehicleCanBeDamaged) return;
+                
+                this.vehicleHealth -= amount;
+                
+                // Update health display
+                this.updateVehicleHealthDisplay();
+                
+                // Check if vehicle is destroyed
+                if (this.vehicleHealth <= 0) {
+                    this.vehicleHealth = 0;
+                    this.createVehicleExplosion();
+                }
+            }
+            
+            // Update the health display
+            updateVehicleHealthDisplay() {
+                // Get the health container and fill elements
+                const healthContainer = document.getElementById('vehicle-health-container');
+                const healthFill = document.getElementById('vehicle-health-fill');
+                
+                if (healthFill) {
+                    // Update health bar fill percentage
+                    const healthPercent = (this.vehicleHealth / this.vehicleMaxHealth) * 100;
+                    healthFill.style.width = `${healthPercent}%`;
+                    
+                    // Change color based on health
+                    if (healthPercent > 60) {
+                        healthFill.style.backgroundColor = '#00ff00'; // Green
+                    } else if (healthPercent > 30) {
+                        healthFill.style.backgroundColor = '#ffff00'; // Yellow
+                    } else {
+                        healthFill.style.backgroundColor = '#ff0000'; // Red
+                    }
+                }
+                
+                // Show/hide based on whether player is in vehicle
+                if (healthContainer) {
+                    healthContainer.style.display = this.isInVehicle ? 'none' : 'block';
+                }
+            }
+            
+            // Function to add UI elements to the game
+            setupUI() {
+                // Add vehicle health display container
+                const healthContainer = document.createElement('div');
+                healthContainer.id = 'vehicle-health-container';
+                healthContainer.style.position = 'absolute';
+                healthContainer.style.bottom = '10px';
+                healthContainer.style.right = '10px';
+                healthContainer.style.padding = '5px';
+                healthContainer.style.backgroundColor = 'rgba(0, 0, 0, 0.5)';
+                healthContainer.style.borderRadius = '5px';
+                healthContainer.style.display = 'none'; // Hidden by default (when in vehicle)
+                
+                const healthLabel = document.createElement('div');
+                healthLabel.textContent = 'Vehicle Health:';
+                healthLabel.style.color = 'white';
+                healthLabel.style.marginBottom = '5px';
+                healthLabel.style.fontSize = '14px';
+                
+                const healthBar = document.createElement('div');
+                healthBar.id = 'vehicle-health';
+                healthBar.style.width = '150px';
+                healthBar.style.height = '15px';
+                healthBar.style.backgroundColor = '#333';
+                healthBar.style.borderRadius = '3px';
+                healthBar.style.overflow = 'hidden';
+                
+                const healthFill = document.createElement('div');
+                healthFill.id = 'vehicle-health-fill';
+                healthFill.style.width = '100%';
+                healthFill.style.height = '100%';
+                healthFill.style.backgroundColor = '#00ff00';
+                healthFill.style.transition = 'width 0.3s, background-color 0.3s';
+                
+                healthBar.appendChild(healthFill);
+                healthContainer.appendChild(healthLabel);
+                healthContainer.appendChild(healthBar);
+                document.body.appendChild(healthContainer);
             }
         }
         
