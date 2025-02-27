@@ -52,7 +52,7 @@
         Wanted: <span id="wanted">0</span>/6
     </div>
     <div class="control-instructions">
-        Controls: WASD or Arrow Keys to move | E to enter/exit vehicles | L to toggle lights | K to toggle day/night | SPACE for handbrake/shooting
+        Controls: WASD or Arrow Keys to move | E to enter/exit vehicles | L to toggle lights | K to toggle day/night | SPACE for handbrake/shooting | C to toggle camera view
     </div>
     
     <script>
@@ -74,8 +74,24 @@
                 console.log('Initializing game...');
                 
                 // Constants
-                this.CAMERA_HEIGHT = 40; // Reduced from 80 to 60 (25% closer)
-                this.CAMERA_ANGLE = 90; // Changed from 60 to 90 (completely top-down)
+                this.CAMERA_HEIGHT = 5; // Reduced height for behind-car view
+                this.CAMERA_DISTANCE = 10; // Distance behind the car
+                this.CAMERA_ANGLE = 15; // Looking slightly downward (was 90 for top-down)
+                
+                // Top-down view constants
+                this.TOPDOWN_CAMERA_HEIGHT = 40; // Height for top-down view
+                this.TOPDOWN_CAMERA_ANGLE = 90; // Looking straight down for top-down view
+                
+                // Camera view mode
+                this.cameraMode = 'thirdperson'; // 'thirdperson' or 'topdown'
+                this.canToggleCamera = true; // Prevent camera toggle spam
+                
+                // Camera inertia parameters - reduced for less lag
+                this.cameraTargetRotation = 0; // Target rotation angle
+                this.cameraCurrentRotation = 0; // Current rotation angle
+                this.cameraLerpFactor = 4.0; // Increased from 2.5 for less inertia
+                this.cameraRotationInertia = 0.9; // Increased from 0.85 for less inertia
+                this.cameraPositionLerpFactor = 5.0; // Increased from 3.5 for faster camera movement
                 
                 // Create scene
                 this.scene = new THREE.Scene();
@@ -189,6 +205,11 @@
                 this.lastVehiclePosition = new THREE.Vector3(); // Store vehicle position when exiting
                 this.lastVehicleRotation = 0; // Store vehicle rotation when exiting
                 
+                // Traffic system
+                this.trafficManager = new TrafficManager(this.scene);
+                this.trafficManager.setPlayerVehicle(this.player);
+                this.currentVehicle = this.player; // Track which vehicle player is controlling
+                
                 // Camera transition parameters
                 this.targetCameraHeight = this.CAMERA_HEIGHT; // Target for smooth transitions
                 this.cameraTransitionSpeed = 10; // Speed of camera height transitions
@@ -256,33 +277,8 @@
                     this.updateBullets(deltaTime);
                 }
                 
-                // Restore camera functionality
-                // Update camera position to follow player (whether in vehicle or pedestrian)
-                const target = this.isInVehicle ? this.player : this.pedestrian;
-                
-                if (target) {
-                    // Smoothly interpolate camera height
-                    const heightDifference = this.targetCameraHeight - this.camera.position.y;
-                    if (Math.abs(heightDifference) > 0.1) {
-                        this.camera.position.y += heightDifference * Math.min(1, this.cameraTransitionSpeed * deltaTime);
-                    } else {
-                        this.camera.position.y = this.targetCameraHeight;
-                    }
-                    
-                    this.camera.position.x = target.position.x;
-                    this.camera.position.z = target.position.z;
-                    
-                    // Always look straight down at the player
-                    this.camera.lookAt(
-                        target.position.x,
-                        target.position.y,
-                        target.position.z
-                    );
-                    
-                    // Keep camera rotation values fixed
-                    this.camera.rotation.z = 0;
-                    this.camera.rotation.x = degToRad(-this.CAMERA_ANGLE);
-                }
+                // Update camera with inertia
+                this.updateCameraWithInertia(deltaTime);
                 
                 // Update lighting for day/night cycle
                 this.updateLighting(deltaTime);
@@ -290,8 +286,138 @@
                 // Update skidmarks
                 this.updateSkidmarks(deltaTime);
                 
+                // Update traffic system
+                if (this.trafficManager) {
+                    this.trafficManager.update(deltaTime);
+                }
+                
                 // Update UI stats
                 document.getElementById('cash').textContent = Math.floor(Math.random() * 100);
+            }
+            
+            // New method for updating camera with inertia
+            updateCameraWithInertia(deltaTime) {
+                const target = this.isInVehicle ? this.currentVehicle : this.pedestrian;
+                
+                if (!target) return;
+                
+                // Smoothly interpolate camera height
+                const heightDifference = this.targetCameraHeight - this.camera.position.y;
+                if (Math.abs(heightDifference) > 0.1) {
+                    this.camera.position.y += heightDifference * Math.min(1, this.cameraTransitionSpeed * deltaTime);
+                } else {
+                    this.camera.position.y = this.targetCameraHeight;
+                }
+                
+                if (this.cameraMode === 'topdown') {
+                    // Top-down view
+                    this.camera.position.x = target.position.x;
+                    this.camera.position.z = target.position.z;
+                    
+                    // Look straight down
+                    this.camera.lookAt(
+                        target.position.x,
+                        target.position.y,
+                        target.position.z
+                    );
+                    
+                    // Set fixed rotation for top-down view
+                    this.camera.rotation.z = 0;
+                    this.camera.rotation.x = degToRad(-this.TOPDOWN_CAMERA_ANGLE);
+                } else if (this.isInVehicle) {
+                    // Third-person view for vehicle
+                    // Update camera target rotation to match vehicle rotation
+                    const vehicleAngle = target.rotation.y;
+                    
+                    // Calculate difference between current camera rotation and vehicle rotation
+                    let rotationDiff = vehicleAngle - this.cameraTargetRotation;
+                    
+                    // Normalize angle difference to [-PI, PI]
+                    while (rotationDiff > Math.PI) rotationDiff -= 2 * Math.PI;
+                    while (rotationDiff < -Math.PI) rotationDiff += 2 * Math.PI;
+                    
+                    // Update target rotation with smooth damping (more responsive but still has inertia)
+                    this.cameraTargetRotation += rotationDiff * Math.min(1, this.cameraLerpFactor * deltaTime);
+                    
+                    // Apply inertia to current rotation (smoother transitions)
+                    const currentRotationDiff = this.cameraTargetRotation - this.cameraCurrentRotation;
+                    
+                    // Normalize this difference too
+                    let normalizedCurrentDiff = currentRotationDiff;
+                    while (normalizedCurrentDiff > Math.PI) normalizedCurrentDiff -= 2 * Math.PI;
+                    while (normalizedCurrentDiff < -Math.PI) normalizedCurrentDiff += 2 * Math.PI;
+                    
+                    // Apply eased motion to current rotation
+                    this.cameraCurrentRotation += normalizedCurrentDiff * Math.min(1, this.cameraLerpFactor * deltaTime * this.cameraRotationInertia);
+                    
+                    // Calculate camera offset using the camera's current rotation (not the car's)
+                    const cameraOffsetX = Math.sin(this.cameraCurrentRotation) * this.CAMERA_DISTANCE;
+                    const cameraOffsetZ = Math.cos(this.cameraCurrentRotation) * this.CAMERA_DISTANCE;
+                    
+                    // Target camera position (where we want the camera to move toward)
+                    const targetCameraX = target.position.x + cameraOffsetX;
+                    const targetCameraZ = target.position.z + cameraOffsetZ;
+                    
+                    // Smoothly move camera toward target position (position inertia)
+                    const positionLerpAmount = Math.min(1, this.cameraPositionLerpFactor * deltaTime);
+                    this.camera.position.x += (targetCameraX - this.camera.position.x) * positionLerpAmount;
+                    this.camera.position.z += (targetCameraZ - this.camera.position.z) * positionLerpAmount;
+                    
+                    // Calculate look target - slightly ahead of vehicle
+                    // Use the vehicle's forward direction, not the camera's direction
+                    const vehicleForwardX = -Math.sin(vehicleAngle) * 5;
+                    const vehicleForwardZ = -Math.cos(vehicleAngle) * 5;
+                    
+                    const lookAtX = target.position.x + vehicleForwardX;
+                    const lookAtZ = target.position.z + vehicleForwardZ;
+                    
+                    // Look at the target with a slight height offset
+                    this.camera.lookAt(lookAtX, target.position.y + 1, lookAtZ);
+                    
+                } else if (this.pedestrian) {
+                    // Third-person view for pedestrian
+                    const pedestrianAngle = this.pedestrian.rotation.y;
+                    
+                    // Update target rotation with less aggressive tracking
+                    let rotationDiff = pedestrianAngle - this.cameraTargetRotation;
+                    
+                    // Normalize difference
+                    while (rotationDiff > Math.PI) rotationDiff -= 2 * Math.PI;
+                    while (rotationDiff < -Math.PI) rotationDiff += 2 * Math.PI;
+                    
+                    // Faster rotation for pedestrian camera (less inertia)
+                    this.cameraTargetRotation += rotationDiff * Math.min(1, 2.5 * deltaTime);
+                    
+                    // Apply inertia
+                    const currentRotationDiff = this.cameraTargetRotation - this.cameraCurrentRotation;
+                    
+                    // Normalize
+                    let normalizedCurrentDiff = currentRotationDiff;
+                    while (normalizedCurrentDiff > Math.PI) normalizedCurrentDiff -= 2 * Math.PI;
+                    while (normalizedCurrentDiff < -Math.PI) normalizedCurrentDiff += 2 * Math.PI;
+                    
+                    // Apply with less inertia for pedestrian
+                    this.cameraCurrentRotation += normalizedCurrentDiff * Math.min(1, 2.8 * deltaTime);
+                    
+                    // Calculate position with more stable follow distance
+                    const cameraOffsetX = Math.sin(this.cameraCurrentRotation) * 5;
+                    const cameraOffsetZ = Math.cos(this.cameraCurrentRotation) * 5;
+                    
+                    // Target position
+                    const targetCameraX = target.position.x + cameraOffsetX;
+                    const targetCameraZ = target.position.z + cameraOffsetZ;
+                    
+                    // Faster position update for pedestrian (less lag)
+                    this.camera.position.x += (targetCameraX - this.camera.position.x) * Math.min(1, 4 * deltaTime);
+                    this.camera.position.z += (targetCameraZ - this.camera.position.z) * Math.min(1, 4 * deltaTime);
+                    this.camera.position.y = this.targetCameraHeight;
+                    
+                    // Look ahead of pedestrian
+                    const lookAtX = target.position.x - Math.sin(pedestrianAngle) * 2;
+                    const lookAtZ = target.position.z - Math.cos(pedestrianAngle) * 2;
+                    
+                    this.camera.lookAt(lookAtX, target.position.y + 1, lookAtZ);
+                }
             }
             
             createWorld() {
@@ -440,6 +566,16 @@
                     this.canToggleDayNight = false;
                     setTimeout(() => {
                         this.canToggleDayNight = true;
+                    }, 500); // 500ms cooldown
+                }
+                
+                // Handle camera view toggle with C key
+                if (event.key.toLowerCase() === 'c' && this.canToggleCamera) {
+                    this.toggleCameraView();
+                    // Prevent toggle spam
+                    this.canToggleCamera = false;
+                    setTimeout(() => {
+                        this.canToggleCamera = true;
                     }, 500); // 500ms cooldown
                 }
                 
@@ -638,35 +774,8 @@
                     this.updatePedestrian(deltaTime);
                 }
                 
-                // Update camera position to follow player (whether in vehicle or pedestrian)
-                const target = this.isInVehicle ? this.player : this.pedestrian;
-                
-                if (target) {
-                    this.target = target;
-                    this.targetPosition = target.position;
-                    
-                    // Smoothly interpolate camera height
-                    const heightDifference = this.targetCameraHeight - this.camera.position.y;
-                    if (Math.abs(heightDifference) > 0.1) {
-                        this.camera.position.y += heightDifference * Math.min(1, this.cameraTransitionSpeed * deltaTime);
-                    } else {
-                        this.camera.position.y = this.targetCameraHeight;
-                    }
-                    
-                    this.camera.position.x = target.position.x;
-                    this.camera.position.z = target.position.z;
-                    
-                    // Always look straight down at the player
-                    this.camera.lookAt(
-                        target.position.x,
-                        target.position.y,
-                        target.position.z
-                    );
-                    
-                    // Keep camera rotation values fixed
-                    this.camera.rotation.z = 0;
-                    this.camera.rotation.x = degToRad(-this.CAMERA_ANGLE);
-                }
+                // Update camera with inertia (replacing the old camera update)
+                this.updateCameraWithInertia(deltaTime);
                 
                 // Update bullets
                 this.updateBullets(deltaTime);
@@ -888,7 +997,7 @@
                     // Check if we're very close to a different wall to prevent getting stuck between walls
                     if (this.lastCollisionNormal) {
                         // Check for critical collisions even during cooldown
-                        const carPosition = new THREE.Vector2(this.player.position.x, this.player.position.z);
+                        const carPosition = new THREE.Vector2(this.currentVehicle.position.x, this.currentVehicle.position.z);
                         
                         // Check each collidable object
                         for (const obj of this.collidableObjects) {
@@ -948,7 +1057,7 @@
                 }
                 
                 // Regular collision detection
-                const carPosition = new THREE.Vector2(this.player.position.x, this.player.position.z);
+                const carPosition = new THREE.Vector2(this.currentVehicle.position.x, this.currentVehicle.position.z);
                 
                 // Check each collidable object
                 for (const obj of this.collidableObjects) {
@@ -998,6 +1107,47 @@
                     }
                 }
                 
+                // Also check collisions with traffic cars
+                if (this.trafficManager && this.trafficManager.trafficCars) {
+                    for (const trafficCar of this.trafficManager.trafficCars) {
+                        if (!trafficCar.mesh) continue;
+                        
+                        // Calculate distance between cars
+                        const dx = this.currentVehicle.position.x - trafficCar.mesh.position.x;
+                        const dz = this.currentVehicle.position.z - trafficCar.mesh.position.z;
+                        const distanceSquared = dx * dx + dz * dz;
+                        
+                        // Combined collision radius
+                        const combinedRadius = this.collisionRadius + trafficCar.collisionRadius;
+                        
+                        if (distanceSquared < (combinedRadius * combinedRadius)) {
+                            // We have a collision with a traffic car!
+                            this.lastCollisionTime = now;
+                            
+                            // Calculate collision normal (direction to push the car away)
+                            const collisionNormal = new THREE.Vector2(dx, dz).normalize();
+                            this.lastCollisionNormal = collisionNormal.clone();
+                            
+                            // Calculate exact collision point - halfway between vehicles
+                            const collisionPoint = new THREE.Vector3(
+                                this.currentVehicle.position.x - collisionNormal.x * this.collisionRadius * 0.5,
+                                0.5, // Slightly above ground level
+                                this.currentVehicle.position.z - collisionNormal.y * this.collisionRadius * 0.5
+                            );
+                            
+                            return {
+                                collision: true,
+                                normal: collisionNormal,
+                                point: collisionPoint,
+                                object: {
+                                    type: 'trafficCar',
+                                    trafficCar: trafficCar
+                                }
+                            };
+                        }
+                    }
+                }
+                
                 return { collision: false };
             }
             
@@ -1022,7 +1172,7 @@
                 const targetPosition = new THREE.Vector3().copy(previousPosition).add(pushbackVector);
                 
                 // Setup collision recovery
-                this.collisionStartPosition.copy(this.player.position);
+                this.collisionStartPosition.copy(this.currentVehicle.position);
                 this.collisionTargetPosition.copy(targetPosition);
                 
                 // Make repositioning truly linear with speed
@@ -1035,9 +1185,44 @@
                 // Enable collision recovery mode
                 this.inCollisionRecovery = true;
                 
+                // Special handling for traffic car collisions
+                if (collisionInfo.object && collisionInfo.object.type === 'trafficCar') {
+                    // Apply force to the traffic car - making it react to player's impact
+                    const trafficCar = collisionInfo.object.trafficCar;
+                    
+                    // Calculate impact force based on player's speed
+                    const impactForce = originalSpeed * 0.8;
+                    
+                    // Apply equal and opposite force to traffic car
+                    if (impactForce > 5) { // Only apply significant forces
+                        // Push traffic car away from player
+                        const pushX = -collisionInfo.normal.x * impactForce * 0.05;
+                        const pushZ = -collisionInfo.normal.y * impactForce * 0.05;
+                        
+                        // Apply immediate position change
+                        trafficCar.mesh.position.x += pushX;
+                        trafficCar.mesh.position.z += pushZ;
+                        
+                        // Apply velocity change - lasts longer than immediate position change
+                        // Store the impulse in the traffic car for its update method to handle
+                        trafficCar.velocity = -impactForce * 0.5; // Reversed direction
+                        
+                        // Turn the car slightly in the direction of impact
+                        const turnAmount = (Math.random() - 0.5) * impactForce * 0.01;
+                        trafficCar.mesh.rotation.y += turnAmount;
+                        
+                        // Assign new random waypoints to make the car find a new path
+                        if (this.trafficManager) {
+                            setTimeout(() => {
+                                this.trafficManager.assignWaypoints(trafficCar);
+                            }, 500);
+                        }
+                    }
+                }
+                
                 // Continue with the rest of collision handling
                 // Get the car's velocity vector
-                const angle = this.player.rotation.y;
+                const angle = this.currentVehicle.rotation.y;
                 const velocityVector = new THREE.Vector2(
                     -Math.sin(angle) * this.playerVelocity,
                     -Math.cos(angle) * this.playerVelocity
@@ -1086,7 +1271,7 @@
                     
                     // Apply tiny rotation based on which side was hit
                     const sideHit = dot > 0 ? 1 : -1;
-                    this.player.rotation.y += maxAngleChange * sideHit;
+                    this.currentVehicle.rotation.y += maxAngleChange * sideHit;
                     
                     // Play proportional collision sound
                     this.playCollisionSound(originalSpeed * 0.1);
@@ -1146,7 +1331,7 @@
                     this.rotationSpeed = 3 + originalSpeed / 10;
                     
                     // Linear slowdown during rotation
-                    const angleDifference = Math.abs(this.targetRotation - this.player.rotation.y);
+                    const angleDifference = Math.abs(this.targetRotation - this.currentVehicle.rotation.y);
                     if (angleDifference > 0.8 && this.playerVelocity > 10) {
                         // Linear speed reduction
                         this.playerVelocity *= (1 - (speedFactor * 0.4));
@@ -1922,6 +2107,10 @@
                 // Wheels - make them more visible from top-down view
                 this.addSimpleSportyWheels(carWidth, carLength);
                 
+                // Initialize camera rotation values to match the vehicle's initial rotation
+                this.cameraTargetRotation = this.player.rotation.y;
+                this.cameraCurrentRotation = this.player.rotation.y;
+                
                 return this.player;
             }
             
@@ -1982,13 +2171,17 @@
                 if (this.isInVehicle) {
                     // Exit vehicle
                     this.createPedestrian();
-                    this.player.visible = true; // Keep vehicle visible
-                    this.lastVehiclePosition.copy(this.player.position);
-                    this.lastVehicleRotation = this.player.rotation.y;
+                    this.currentVehicle.visible = true; // Keep vehicle visible
+                    this.lastVehiclePosition.copy(this.currentVehicle.position);
+                    this.lastVehicleRotation = this.currentVehicle.rotation.y;
                     // Reset vehicle velocity when exiting
                     this.playerVelocity = 0;
                     // Set camera height for pedestrian view
-                    this.targetCameraHeight = 25;
+                    this.targetCameraHeight = 3; // Lower height for third-person pedestrian view (was 25)
+                    
+                    // Reset camera rotation to match pedestrian initial direction
+                    this.cameraTargetRotation = this.pedestrian.rotation.y;
+                    this.cameraCurrentRotation = this.pedestrian.rotation.y;
                     
                     // Update control instructions for the new pedestrian controls
                     document.querySelector('.control-instructions').textContent = 
@@ -1997,14 +2190,29 @@
                     // Show vehicle health display when not in vehicle
                     setTimeout(() => this.updateVehicleHealthDisplay(), 100);
                 } else {
-                    // Check distance to vehicle
-                    const distance = this.pedestrian.position.distanceTo(this.player.position);
-                    if (distance < 5) { // Can only enter if close to vehicle
-                        // Enter vehicle
+                    // Check for nearby traffic cars first
+                    const nearbyTrafficCar = this.trafficManager.getTrafficCarAt(this.pedestrian.position);
+                    
+                    if (nearbyTrafficCar) {
+                        // Enter traffic car
                         this.scene.remove(this.pedestrian);
                         this.pedestrian = null;
+                        
+                        // Take control of traffic car
+                        this.currentVehicle = nearbyTrafficCar.mesh;
+                        
+                        // Remove from traffic manager (no longer AI controlled)
+                        this.trafficManager.removeTrafficCar(nearbyTrafficCar);
+                        
+                        // Update player's collision object to point to the new vehicle
+                        this.trafficManager.setPlayerVehicle(this.currentVehicle);
+                        
                         // Set camera height for vehicle view
                         this.targetCameraHeight = this.CAMERA_HEIGHT;
+                        
+                        // Reset camera rotation to match vehicle initial direction
+                        this.cameraTargetRotation = this.currentVehicle.rotation.y;
+                        this.cameraCurrentRotation = this.currentVehicle.rotation.y;
                         
                         // Update control instructions
                         document.querySelector('.control-instructions').textContent = 
@@ -2013,7 +2221,35 @@
                         // Hide vehicle health display when in vehicle
                         setTimeout(() => this.updateVehicleHealthDisplay(), 100);
                     } else {
-                        return; // Too far from vehicle
+                        // Check distance to player's original vehicle
+                        const distance = this.pedestrian.position.distanceTo(this.player.position);
+                        if (distance < 5) { // Can only enter if close to vehicle
+                            // Enter original vehicle
+                            this.scene.remove(this.pedestrian);
+                            this.pedestrian = null;
+                            
+                            // Set back to original player vehicle
+                            this.currentVehicle = this.player;
+                            
+                            // Update player's collision object in traffic manager
+                            this.trafficManager.setPlayerVehicle(this.currentVehicle);
+                            
+                            // Set camera height for vehicle view
+                            this.targetCameraHeight = this.CAMERA_HEIGHT;
+                            
+                            // Reset camera rotation to match vehicle initial direction
+                            this.cameraTargetRotation = this.currentVehicle.rotation.y;
+                            this.cameraCurrentRotation = this.currentVehicle.rotation.y;
+                            
+                            // Update control instructions
+                            document.querySelector('.control-instructions').textContent = 
+                                "Controls: WASD or Arrow Keys to move | E to exit vehicles | L to toggle lights | K to toggle day/night | SPACE for handbrake";
+                            
+                            // Hide vehicle health display when in vehicle
+                            setTimeout(() => this.updateVehicleHealthDisplay(), 100);
+                        } else {
+                            return; // Too far from any vehicle
+                        }
                     }
                 }
                 
@@ -2904,7 +3140,7 @@
                     // Create oscillator for the main "crack" sound
                     const oscillator = ctx.createOscillator();
                     oscillator.type = 'square';
-                    oscillator.frequency.value = 1800; // High pitched crack
+                    oscillator.frequency.value = 70; // High pitched crack
                     
                     // Create gain node for volume control
                     const gainNode = ctx.createGain();
@@ -3149,9 +3385,9 @@
                     
                     // Convert spherical to cartesian coordinates for more realistic 3D explosion
                     const velocity = new THREE.Vector3(
-                        Math.cos(angle) * Math.cos(height) * speed,
-                        Math.sin(height) * speed,
-                        Math.sin(angle) * Math.cos(height) * speed
+                        Math.cos(angle) * Math.cos(height) * speed * 100000, // 10x faster
+                        Math.sin(height) * speed * 100000, // 10x faster
+                        Math.sin(angle) * Math.cos(height) * speed * 100000 // 10x faster
                     );
                     
                     velocities.push(velocity);
@@ -3164,7 +3400,7 @@
                     colors.push(particleColors[colorIndex].r, particleColors[colorIndex].g, particleColors[colorIndex].b);
                     
                     // Very short lifetimes for faster fading
-                    particleLifetimes.push(0.2 + Math.random() * 0.8); // Much shorter lifetime (0.2-1.0 seconds)
+                    particleLifetimes.push((0.2 + Math.random() * 0.8) / 3000); // 10x faster lifetime (0.02-0.1 seconds)
                 }
                 
                 explosionGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
@@ -3210,16 +3446,16 @@
                     
                     // Velocity - mainly upward with some spread - faster
                     const vel = new THREE.Vector3(
-                        (Math.random() - 0.5) * 6,
-                        6 + Math.random() * 12, // Much faster upward
-                        (Math.random() - 0.5) * 6
+                        (Math.random() - 0.5) * 6 * 100, // 10x faster
+                        (6 + Math.random() * 12) * 20, // 10x faster upward
+                        (Math.random() - 0.5) * 6 * 100 // 10x faster
                     );
                     
                     fireSprites.push(sprite);
                     fireSizes.push(size);
                     firePositions.push(pos);
                     fireVelocities.push(vel);
-                    fireRotationSpeeds.push((Math.random() - 0.5) * 6); // Faster rotation
+                    fireRotationSpeeds.push((Math.random() - 0.5) * 6 * 10); // 10x faster rotation
                     
                     fireParticles.add(sprite);
                 }
@@ -3252,7 +3488,7 @@
                     sprite.scale.set(scale, scale, 1.0);
                     
                     // Start position - much wider spread
-                    const startDelay = Math.random() * 0.3; // Very short delays
+                    const startDelay = Math.random() * 0.3 / 10; // 10x faster delay (0-0.03 seconds)
                     const pos = new THREE.Vector3(
                         vehiclePosition.x + (Math.random() - 0.5) * 8, // Wider spread
                         vehiclePosition.y + Math.random() * 2.0,      // Higher initial position
@@ -3262,17 +3498,17 @@
                     
                     // Velocity - faster upward drift
                     const vel = new THREE.Vector3(
-                        (Math.random() - 0.5) * 4,
-                        3 + Math.random() * 6, // Even faster rise
-                        (Math.random() - 0.5) * 4
+                        (Math.random() - 0.5) * 4 * 10, // 10x faster
+                        (3 + Math.random() * 6) * 10, // 10x faster rise
+                        (Math.random() - 0.5) * 4 * 10 // 10x faster
                     );
                     
                     smokeSprites.push(sprite);
                     smokeScales.push(scale);
                     smokePositions.push(pos);
                     smokeVelocities.push(vel);
-                    smokeRotationSpeeds.push((Math.random() - 0.5) * 1.5); // Faster rotation
-                    smokeLifetimes.push(1.5 + Math.random() * 1.5); // Much shorter life (1.5-3 seconds)
+                    smokeRotationSpeeds.push((Math.random() - 0.5) * 1.5 * 10); // 10x faster rotation
+                    smokeLifetimes.push((1.5 + Math.random() * 1.5) / 10); // 10x faster life (0.15-0.3 seconds)
                     smokeStartTimes.push(startDelay);
                     
                     // Start immediately visible
@@ -3284,8 +3520,8 @@
                 this.scene.add(smokeGroup);
                 
                 // PHASE 5: Debris particles - more and larger, flung further
-                const debrisCount = 40; // More debris pieces
-                const debrisGeometry = new THREE.BoxGeometry(0.6, 0.6, 0.6); // Larger debris
+                const debrisCount = 200; // More debris pieces
+                const debrisGeometry = new THREE.BoxGeometry(0.2, 0.1, 0.2); // Larger debris
                 const debrisMaterial = new THREE.MeshStandardMaterial({
                     color: 0x333333,
                     roughness: 0.7,
@@ -3303,16 +3539,16 @@
                     
                     // Random velocity - much stronger and faster
                     const velocity = new THREE.Vector3(
-                        (Math.random() - 0.5) * 30, // 50% higher horizontal speed
-                        12 + Math.random() * 20,    // Much higher initial upward velocity
-                        (Math.random() - 0.5) * 30  // 50% higher horizontal speed
+                        (Math.random() - 0.5) * 30 * 10 * 3, // 30x faster (was 10x)
+                        (12 + Math.random() * 20) * 10 ,  // 30x faster upward velocity (was 10x)
+                        (Math.random() - 0.5) * 30 * 10 * 3  // 30x faster (was 10x)
                     );
                     
                     // Random rotation speed - faster
                     const rotation = new THREE.Vector3(
-                        Math.random() * 15,
-                        Math.random() * 15,
-                        Math.random() * 15
+                        Math.random() * 15 * 10 * 3, // 30x faster (was 10x)
+                        Math.random() * 15 * 10 * 3, // 30x faster (was 10x)
+                        Math.random() * 15 * 10 * 3  // 30x faster (was 10x)
                     );
                     
                     debrisMeshes.push(debris);
@@ -3354,12 +3590,12 @@
                 
                 // Camera shake effect - stronger but shorter
                 let shakeIntensity = 1.2; // Higher initial shake intensity
-                let shakeDuration = 1.0; // Shorter duration in seconds
+                let shakeDuration = 0.1; // 10x faster duration (was 1.0 second)
                 let shakeStartTime = Date.now();
                 
                 // Animation loop for the explosion - ADJUSTED TIMING
                 let explosionTime = 0;
-                const explosionDuration = 3.5; // Slightly longer duration, but with much faster fade
+                const explosionDuration = 0.35; // 10x faster duration (was 3.5 seconds)
                 
                 const updateExplosion = (delta) => {
                     explosionTime += delta;
@@ -3384,12 +3620,12 @@
                     
                     for (let i = 0; i < particleCount; i++) {
                         // Apply velocity with stronger gravity
-                        velocities[i].y -= 20.0 * delta; // Higher gravity for faster fall
+                        velocities[i].y -= 20.0 * 10 * delta; // 10x higher gravity for faster fall
                         
                         // Faster slowdown (air resistance)
-                        velocities[i].x *= 0.92;
-                        velocities[i].y *= 0.92;
-                        velocities[i].z *= 0.92;
+                        velocities[i].x *= Math.pow(0.92, 10); // Much faster deceleration
+                        velocities[i].y *= Math.pow(0.92, 10);
+                        velocities[i].z *= Math.pow(0.92, 10);
                         
                         // Update position
                         positions[i * 3] += velocities[i].x * delta;
@@ -3398,15 +3634,15 @@
                         
                         // Shrink particles MUCH faster
                         if (explosionTime < particleLifetimes[i]) {
-                            sizes[i] *= 0.93; // Faster shrink
+                            sizes[i] *= Math.pow(0.93, 10); // Much faster shrink
                         } else {
                             sizes[i] = 0; // Hide when lifetime is over
                         }
                     }
                     
                     // Overall opacity fade - much faster
-                    if (explosionTime > 0.4) { // Start fading after 0.4 seconds
-                        const particleFade = Math.max(0, 1 - ((explosionTime - 0.4) / 0.8)); // Fade out over 0.8 seconds
+                    if (explosionTime > 0.04) { // 10x faster (was 0.4)
+                        const particleFade = Math.max(0, 1 - ((explosionTime - 0.04) / 0.08)); // 10x faster fade (was 0.8)
                         explosionMaterial.opacity = particleFade;
                     }
                     
@@ -3419,9 +3655,9 @@
                         const sprite = fireSprites[i];
                         
                         // Rise and slow down faster
-                        fireVelocities[i].y -= 1.5 * delta; // Faster deceleration
-                        fireVelocities[i].x *= 0.85; // Faster lateral slowdown
-                        fireVelocities[i].z *= 0.85;
+                        fireVelocities[i].y -= 1.5 * 10 * delta; // 10x faster deceleration
+                        fireVelocities[i].x *= Math.pow(0.85, 10); // Much faster lateral slowdown
+                        fireVelocities[i].z *= Math.pow(0.85, 10);
                         
                         sprite.position.x += fireVelocities[i].x * delta;
                         sprite.position.y += fireVelocities[i].y * delta;
@@ -3431,9 +3667,9 @@
                         sprite.material.rotation += fireRotationSpeeds[i] * delta;
                         
                         // Fade out MUCH more quickly
-                        const fadeStart = 0.2; // Start fading almost immediately
+                        const fadeStart = 0.02; // 10x faster (was 0.2)
                         if (explosionTime > fadeStart) {
-                            const fadeFactor = 1.0 - Math.min(1.0, (explosionTime - fadeStart) / 0.5); // Fade over just 0.5 seconds
+                            const fadeFactor = 1.0 - Math.min(1.0, (explosionTime - fadeStart) / 0.05); // 10x faster fade (was 0.5)
                             sprite.material.opacity = fadeFactor;
                             sprite.scale.x = fireSizes[i] * fadeFactor;
                             sprite.scale.y = fireSizes[i] * fadeFactor;
@@ -3447,7 +3683,7 @@
                         
                         if (adjustedTime > 0) {
                             // Move smoke upward with faster physics
-                            smokeVelocities[i].y *= 0.94; // Slightly faster deceleration
+                            smokeVelocities[i].y *= Math.pow(0.94, 10); // 10x faster deceleration
                             sprite.position.x += smokeVelocities[i].x * delta;
                             sprite.position.y += smokeVelocities[i].y * delta;
                             sprite.position.z += smokeVelocities[i].z * delta;
@@ -3456,19 +3692,19 @@
                             sprite.material.rotation += smokeRotationSpeeds[i] * delta;
                             
                             // Fade in faster, then out faster
-                            const fadeInTime = 0.1; // Nearly instant fade in
+                            const fadeInTime = 0.01; // 10x faster (was 0.1)
                             const lifeTime = smokeLifetimes[i];
                             
                             if (adjustedTime < fadeInTime) {
                                 // Fade in faster
                                 sprite.material.opacity = adjustedTime / fadeInTime * 0.8;
-                            } else if (adjustedTime > lifeTime - 0.5) {
-                                // Fade out in last 0.5 second (was 1.0)
-                                sprite.material.opacity = 0.8 * (1.0 - (adjustedTime - (lifeTime - 0.5)) / 0.5);
+                            } else if (adjustedTime > lifeTime - 0.05) { // 10x faster (was 0.5)
+                                // Fade out in last 0.05 second (was 0.5)
+                                sprite.material.opacity = 0.8 * (1.0 - (adjustedTime - (lifeTime - 0.05)) / 0.05);
                             }
                             
                             // Expand smoke faster
-                            const expandFactor = Math.min(1.0 + adjustedTime * 1.5, 4.0); // Even faster expansion
+                            const expandFactor = Math.min(1.0 + adjustedTime * 15, 4.0); // 10x faster expansion (was 1.5)
                             sprite.scale.x = smokeScales[i] * expandFactor;
                             sprite.scale.y = smokeScales[i] * expandFactor;
                         }
@@ -3479,7 +3715,7 @@
                         const debris = debrisMeshes[i];
                         
                         // Apply stronger gravity
-                        debrisVelocities[i].y -= 25.0 * delta; // Stronger gravity
+                        debrisVelocities[i].y -= 25.0 * 10 * 3 * delta; // 30x stronger gravity (was 10x)
                         
                         // Update position
                         debris.position.x += debrisVelocities[i].x * delta;
@@ -3499,17 +3735,17 @@
                             debrisVelocities[i].z *= 0.6;
                             
                             // Stop very small bounces
-                            if (Math.abs(debrisVelocities[i].y) < 3.0) {
+                            if (Math.abs(debrisVelocities[i].y) < 3.0 * 10 * 3) { // 30x faster threshold (was 10x)
                                 debrisVelocities[i].y = 0;
                             }
                         }
                     }
                     
                     // Fade explosion light - much faster, brighter initial flash
-                    if (explosionTime < 0.08) {
+                    if (explosionTime < 0.008) { // 10x faster (was 0.08)
                         explosionLight.intensity = 25; // Full intensity for a very short time
-                    } else if (explosionTime < 0.25) {
-                        explosionLight.intensity = 25 * (1 - (explosionTime - 0.08) / 0.17);
+                    } else if (explosionTime < 0.025) { // 10x faster (was 0.25)
+                        explosionLight.intensity = 25 * (1 - (explosionTime - 0.008) / 0.017); // 10x faster fade
                     } else {
                         explosionLight.intensity = 0;
                     }
@@ -3539,7 +3775,7 @@
                         // Reset vehicle health after explosion animation
                         setTimeout(() => {
                             this.resetVehicleAfterExplosion();
-                        }, 500); // Short delay before respawning
+                        }, 50); // 10x faster delay (was 500ms)
                     }
                 };
                 
@@ -3922,13 +4158,637 @@
                 healthContainer.appendChild(healthBar);
                 document.body.appendChild(healthContainer);
             }
+            
+            // New method to toggle camera view between third-person and top-down
+            toggleCameraView() {
+                if (this.cameraMode === 'thirdperson') {
+                    // Switch to top-down view
+                    this.cameraMode = 'topdown';
+                    this.targetCameraHeight = this.TOPDOWN_CAMERA_HEIGHT;
+                    
+                    // Update info text
+                    document.getElementById('info').textContent = "GTA 2 Clone - Top-Down View (Press C to toggle)";
+                } else {
+                    // Switch to third-person view
+                    this.cameraMode = 'thirdperson';
+                    this.targetCameraHeight = this.CAMERA_HEIGHT;
+                    
+                    // Update info text
+                    document.getElementById('info').textContent = "GTA 2 Clone - Third-Person View (Press C to toggle)";
+                }
+            }
         }
         
         // Initialize game when page loads
         document.addEventListener('DOMContentLoaded', function() {
             console.log('Starting GTA 2 Clone 3D...');
-            const game = new Game();
+            window.game = new Game(); // Make the game accessible globally
         });
+        
+        // TrafficCar class - represents an AI-controlled vehicle
+        class TrafficCar {
+            constructor(scene, position, rotation, color) {
+                // Store references
+                this.scene = scene;
+                
+                // Car properties
+                this.maxSpeed = 20 + Math.random() * 15; // Random max speed between 20-35
+                this.acceleration = 10;
+                this.deceleration = 40;
+                this.rotationSpeed = 1.5;
+                
+                // Physics state
+                this.velocity = 0;
+                this.targetVelocity = this.maxSpeed;
+                this.mesh = null;
+                this.lastPosition = new THREE.Vector3();
+                
+                // AI behavior variables
+                this.stoppedForObstacle = false;
+                this.stoppingDistance = 5; // Distance to start stopping for obstacles
+                this.stoppedTime = 0; // Track how long we've been stopped
+                this.stuckTimeout = 3000; // 3 seconds until we consider ourselves stuck
+                
+                // Waypoint navigation
+                this.currentWaypoint = null;
+                this.nextWaypoint = null;
+                this.waypointReachedDistance = 8;
+                
+                // Create the car mesh
+                this.create(position, rotation, color);
+            }
+            
+            create(position, rotation, color) {
+                // Create a group to hold car parts
+                this.mesh = new THREE.Group();
+                this.mesh.position.copy(position);
+                this.mesh.rotation.y = rotation;
+                this.scene.add(this.mesh);
+                
+                // Store initial position for reference
+                this.lastPosition.copy(position);
+                
+                // Car dimensions
+                const carWidth = 2.0;
+                const carHeight = 0.4;
+                const carLength = 4.0;
+                
+                // Main body - use a random color if not specified
+                const bodyColor = color || new THREE.Color(
+                    Math.random(),
+                    Math.random(),
+                    Math.random()
+                );
+                
+                const bodyGeometry = new THREE.BoxGeometry(carWidth, carHeight, carLength);
+                const bodyMaterial = new THREE.MeshStandardMaterial({
+                    color: bodyColor,
+                    roughness: 0.3,
+                    metalness: 0.7
+                });
+                
+                const carBody = new THREE.Mesh(bodyGeometry, bodyMaterial);
+                carBody.position.y = carHeight/2 + 0.1;
+                carBody.castShadow = true;
+                carBody.receiveShadow = true;
+                this.mesh.add(carBody);
+                
+                // Add roof
+                const roofWidth = carWidth * 0.7;
+                const roofHeight = 0.25;
+                const roofLength = carLength * 0.6;
+                
+                // Slightly darker color for roof
+                const roofColor = new THREE.Color(bodyColor).multiplyScalar(0.8);
+                
+                const roofGeometry = new THREE.BoxGeometry(roofWidth, roofHeight, roofLength);
+                const roofMaterial = new THREE.MeshStandardMaterial({
+                    color: roofColor,
+                    roughness: 0.4,
+                    metalness: 0.6
+                });
+                
+                const roof = new THREE.Mesh(roofGeometry, roofMaterial);
+                roof.position.y = carHeight + roofHeight/2 + 0.1;
+                roof.castShadow = true;
+                this.mesh.add(roof);
+                
+                // Add windows (simplified for traffic cars)
+                const windowMaterial = new THREE.MeshStandardMaterial({
+                    color: 0x333333,
+                    roughness: 0.1,
+                    metalness: 0.9,
+                    transparent: true,
+                    opacity: 0.7
+                });
+                
+                // Front window
+                const windshieldGeometry = new THREE.PlaneGeometry(roofWidth * 0.9, roofLength * 0.3);
+                const windshield = new THREE.Mesh(windshieldGeometry, windowMaterial);
+                windshield.rotation.x = degToRad(-90);
+                windshield.position.set(0, carHeight + roofHeight, -roofLength * 0.3);
+                this.mesh.add(windshield);
+                
+                // Add simple wheels
+                this.addWheels(carWidth, carLength);
+                
+                // Collision properties
+                this.collisionRadius = 2.0;
+            }
+            
+            addWheels(carWidth, carLength) {
+                const wheelRadius = 0.4;
+                const wheelThickness = 0.2;
+                
+                const wheelGeometry = new THREE.CylinderGeometry(wheelRadius, wheelRadius, wheelThickness, 8);
+                const wheelMaterial = new THREE.MeshStandardMaterial({
+                    color: 0x222222, 
+                    roughness: 0.9
+                });
+                
+                // Function to create a wheel at a specific position
+                const createWheel = (x, z) => {
+                    const wheel = new THREE.Mesh(wheelGeometry, wheelMaterial);
+                    wheel.rotation.z = Math.PI / 2; // Correct orientation
+                    wheel.position.set(x, wheelRadius, z);
+                    wheel.castShadow = true;
+                    this.mesh.add(wheel);
+                };
+                
+                // Position wheels relative to car body
+                const xOffset = carWidth/2 * 0.8;
+                const zOffset = carLength/3;
+                
+                createWheel(-xOffset, -zOffset);  // Front left
+                createWheel(xOffset, -zOffset);   // Front right
+                createWheel(-xOffset, zOffset);   // Rear left
+                createWheel(xOffset, zOffset);    // Rear right
+            }
+            
+            update(deltaTime, obstacles) {
+                // Skip update if no waypoint
+                if (!this.currentWaypoint) return;
+                
+                // Check for obstacles in front
+                let obstacleInPath = this.detectObstacles(obstacles);
+                
+                if (obstacleInPath) {
+                    // Gradually slow down
+                    this.targetVelocity = 0;
+                    
+                    if (!this.stoppedForObstacle) {
+                        this.stoppedForObstacle = true;
+                        this.stoppedTime = Date.now();
+                    }
+                    
+                    // If stuck for too long, try to unstuck by finding new waypoint
+                    if (Date.now() - this.stoppedTime > this.stuckTimeout) {
+                        // Reset and try to find a new path
+                        this.stoppedForObstacle = false;
+                        
+                        // Random small adjustment to try to get unstuck
+                        this.mesh.rotation.y += (Math.random() - 0.5) * 0.2;
+                    }
+                } else {
+                    // No obstacle, drive toward waypoint
+                    this.stoppedForObstacle = false;
+                    this.targetVelocity = this.maxSpeed;
+                    
+                    // Navigate toward current waypoint
+                    this.navigateToWaypoint(deltaTime);
+                }
+                
+                // Accelerate/decelerate toward target velocity
+                if (this.velocity < this.targetVelocity) {
+                    this.velocity = Math.min(this.targetVelocity, this.velocity + this.acceleration * deltaTime);
+                } else if (this.velocity > this.targetVelocity) {
+                    this.velocity = Math.max(this.targetVelocity, this.velocity - this.deceleration * deltaTime);
+                }
+                
+                // Store last position for collision detection
+                this.lastPosition.copy(this.mesh.position);
+                
+                // Move forward based on rotation and velocity
+                const moveDistance = this.velocity * deltaTime;
+                const moveX = Math.sin(this.mesh.rotation.y) * moveDistance;
+                const moveZ = Math.cos(this.mesh.rotation.y) * moveDistance;
+                
+                this.mesh.position.x -= moveX;
+                this.mesh.position.z -= moveZ;
+            }
+            
+            navigateToWaypoint(deltaTime) {
+                if (!this.currentWaypoint) return;
+                
+                // Calculate direction to waypoint
+                const directionToWaypoint = new THREE.Vector2(
+                    this.currentWaypoint.x - this.mesh.position.x,
+                    this.currentWaypoint.z - this.mesh.position.z
+                );
+                
+                // Check if we've reached the waypoint
+                if (directionToWaypoint.length() < this.waypointReachedDistance) {
+                    // Waypoint reached, move to next waypoint
+                    this.currentWaypoint = this.nextWaypoint;
+                    
+                    // Request new next waypoint from the traffic manager
+                    if (window.game && window.game.trafficManager) {
+                        const newNextWaypoint = window.game.trafficManager.getNextWaypoint(this);
+                        if (newNextWaypoint) {
+                            this.nextWaypoint = {
+                                x: newNextWaypoint.x,
+                                z: newNextWaypoint.z
+                            };
+                        }
+                    }
+                    
+                    return;
+                }
+                
+                // Calculate target angle to waypoint
+                const targetAngle = Math.atan2(directionToWaypoint.x, directionToWaypoint.y);
+                
+                // Current car angle
+                let currentAngle = this.mesh.rotation.y;
+                
+                // Normalize angles to -π to π
+                while (currentAngle > Math.PI) currentAngle -= 2 * Math.PI;
+                while (currentAngle < -Math.PI) currentAngle += 2 * Math.PI;
+                
+                let angleDiff = targetAngle - currentAngle;
+                while (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
+                while (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
+                
+                // Turn toward waypoint
+                const turnAmount = Math.sign(angleDiff) * Math.min(Math.abs(angleDiff), this.rotationSpeed * deltaTime);
+                this.mesh.rotation.y += turnAmount;
+                
+                // Slow down for turns
+                if (Math.abs(angleDiff) > 0.5) {
+                    // Steeper turns require slower speeds
+                    this.targetVelocity = this.maxSpeed * (1 - Math.abs(angleDiff) / Math.PI);
+                }
+            }
+            
+            detectObstacles(obstacles) {
+                if (!obstacles || obstacles.length === 0) return false;
+                
+                // Get car's forward direction
+                const forwardX = -Math.sin(this.mesh.rotation.y);
+                const forwardZ = -Math.cos(this.mesh.rotation.y);
+                
+                // Check each obstacle
+                for (const obstacle of obstacles) {
+                    if (obstacle.mesh === this.mesh) continue; // Skip self
+                    
+                    // Vector from car to obstacle
+                    const toObstacleX = obstacle.mesh.position.x - this.mesh.position.x;
+                    const toObstacleZ = obstacle.mesh.position.z - this.mesh.position.z;
+                    
+                    // Distance to obstacle
+                    const distanceToObstacle = Math.sqrt(toObstacleX * toObstacleX + toObstacleZ * toObstacleZ);
+                    
+                    // Check if obstacle is too close
+                    if (distanceToObstacle < this.stoppingDistance + this.collisionRadius + obstacle.collisionRadius) {
+                        // Normalize direction to obstacle
+                        const dirToObstacleX = toObstacleX / distanceToObstacle;
+                        const dirToObstacleZ = toObstacleZ / distanceToObstacle;
+                        
+                        // Calculate dot product to see if obstacle is in front
+                        const dotProduct = forwardX * dirToObstacleX + forwardZ * dirToObstacleZ;
+                        
+                        // If dot product is positive, obstacle is in front
+                        if (dotProduct > 0.5) { // Within a ~60 degree cone in front
+                            return true;
+                        }
+                    }
+                }
+                
+                return false;
+            }
+            
+            setWaypoints(current, next) {
+                this.currentWaypoint = current;
+                this.nextWaypoint = next;
+            }
+            
+            destroy() {
+                // Remove from scene
+                if (this.mesh && this.scene) {
+                    this.scene.remove(this.mesh);
+                }
+                this.mesh = null;
+            }
+        }
+        
+        // TrafficManager class - handles spawning and managing AI traffic
+        class TrafficManager {
+            constructor(scene, roadNetwork) {
+                this.scene = scene;
+                this.roadNetwork = roadNetwork || this.createDefaultRoadNetwork();
+                this.trafficCars = [];
+                this.maxCars = 10; // Maximum number of AI cars
+                this.spawnInterval = 5000; // Time between spawn attempts (ms)
+                this.lastSpawnTime = 0;
+                this.playerVehicle = null; // Will be set by the game
+                
+                // Pre-generate spawn points for performance
+                this.spawnPoints = this.generateSpawnPoints();
+            }
+            
+            createDefaultRoadNetwork() {
+                // Default simple road network with waypoints if none provided
+                const network = {
+                    waypoints: [],
+                    connections: []
+                };
+                
+                // Create a grid of waypoints based on the city layout
+                const gridSize = 3; // Match the city grid size
+                const blockSize = 50;
+                const streetWidth = 16;
+                
+                // Create waypoints at intersections
+                for (let x = -gridSize; x <= gridSize+1; x++) {
+                    for (let z = -gridSize; z <= gridSize+1; z++) {
+                        const posX = x * (blockSize + streetWidth) - blockSize/2 - streetWidth/2;
+                        const posZ = z * (blockSize + streetWidth) - blockSize/2 - streetWidth/2;
+                        
+                        network.waypoints.push({
+                            x: posX,
+                            z: posZ,
+                            type: 'intersection'
+                        });
+                    }
+                }
+                
+                // Add mid-road waypoints for better navigation
+                for (let x = -gridSize; x <= gridSize; x++) {
+                    for (let z = -gridSize; z <= gridSize+1; z++) {
+                        const posX = x * (blockSize + streetWidth);
+                        const posZ = z * (blockSize + streetWidth) - blockSize/2 - streetWidth/2;
+                        
+                        network.waypoints.push({
+                            x: posX,
+                            z: posZ,
+                            type: 'horizontal'
+                        });
+                    }
+                }
+                
+                for (let x = -gridSize; x <= gridSize+1; x++) {
+                    for (let z = -gridSize; z <= gridSize; z++) {
+                        const posX = x * (blockSize + streetWidth) - blockSize/2 - streetWidth/2;
+                        const posZ = z * (blockSize + streetWidth);
+                        
+                        network.waypoints.push({
+                            x: posX,
+                            z: posZ,
+                            type: 'vertical'
+                        });
+                    }
+                }
+                
+                // Connect waypoints to form a road network
+                // Each waypoint can connect to nearby waypoints
+                for (let i = 0; i < network.waypoints.length; i++) {
+                    const waypointA = network.waypoints[i];
+                    
+                    for (let j = 0; j < network.waypoints.length; j++) {
+                        if (i === j) continue; // Skip self
+                        
+                        const waypointB = network.waypoints[j];
+                        
+                        // Calculate distance
+                        const dx = waypointA.x - waypointB.x;
+                        const dz = waypointA.z - waypointB.z;
+                        const distance = Math.sqrt(dx*dx + dz*dz);
+                        
+                        // Connect if waypoints are close enough (adjacent road segments)
+                        // This assumes roads are laid out in a grid pattern
+                        if (distance < blockSize + streetWidth + 1) {
+                            // Only connect if one is horizontal and one is vertical, or one is an intersection
+                            if ((waypointA.type === 'intersection' || waypointB.type === 'intersection') ||
+                                (waypointA.type === 'horizontal' && waypointB.type === 'vertical') ||
+                                (waypointA.type === 'vertical' && waypointB.type === 'horizontal')) {
+                                
+                                network.connections.push({
+                                    from: i,
+                                    to: j
+                                });
+                            }
+                        }
+                    }
+                }
+                
+                return network;
+            }
+            
+            generateSpawnPoints() {
+                // Use road network waypoints as spawn points
+                // Only use waypoints that are far enough from the player starting position
+                return this.roadNetwork.waypoints.filter(waypoint => {
+                    // Calculate distance from origin (player's likely position)
+                    const distance = Math.sqrt(waypoint.x * waypoint.x + waypoint.z * waypoint.z);
+                    // Only use points more than 50 units away
+                    return distance > 50;
+                });
+            }
+            
+            update(deltaTime) {
+                // Try to spawn new cars if needed
+                this.trySpawnCar();
+                
+                // Update all traffic cars
+                const obstacles = [...this.trafficCars];
+                if (this.playerVehicle) {
+                    obstacles.push({
+                        mesh: this.playerVehicle,
+                        collisionRadius: 2.5 // Same as player's collision radius
+                    });
+                }
+                
+                for (let i = this.trafficCars.length - 1; i >= 0; i--) {
+                    const car = this.trafficCars[i];
+                    car.update(deltaTime, obstacles);
+                    
+                    // Check if car is too far from player (despawn to save resources)
+                    if (this.playerVehicle && car.mesh) {
+                        const distanceToPlayer = car.mesh.position.distanceTo(this.playerVehicle.position);
+                        if (distanceToPlayer > 200) {
+                            car.destroy();
+                            this.trafficCars.splice(i, 1);
+                        }
+                    }
+                }
+            }
+            
+            trySpawnCar() {
+                const now = Date.now();
+                
+                // Throttle spawn rate
+                if (now - this.lastSpawnTime < this.spawnInterval) return;
+                this.lastSpawnTime = now;
+                
+                // Only spawn if we haven't reached the max
+                if (this.trafficCars.length >= this.maxCars) return;
+                
+                // Only spawn if the player exists (game is running)
+                if (!this.playerVehicle) return;
+                
+                // Pick a random spawn point far from player
+                const validSpawnPoints = this.spawnPoints.filter(point => {
+                    // Verify distance from player
+                    const dx = point.x - this.playerVehicle.position.x;
+                    const dz = point.z - this.playerVehicle.position.z;
+                    const distance = Math.sqrt(dx*dx + dz*dz);
+                    return distance > 60 && distance < 150; // Far enough but not too far
+                });
+                
+                if (validSpawnPoints.length === 0) return;
+                
+                const spawnPoint = validSpawnPoints[Math.floor(Math.random() * validSpawnPoints.length)];
+                
+                // Pick an initial direction (random for now)
+                const initialDirection = Math.random() * Math.PI * 2;
+                
+                // Create a new traffic car
+                const car = new TrafficCar(
+                    this.scene,
+                    new THREE.Vector3(spawnPoint.x, 0.5, spawnPoint.z),
+                    initialDirection
+                );
+                
+                // Find initial waypoints
+                this.assignWaypoints(car);
+                
+                // Add to traffic cars array
+                this.trafficCars.push(car);
+            }
+            
+            assignWaypoints(car) {
+                // Find the closest waypoint as the starting point
+                let closestWaypointIndex = -1;
+                let closestDistance = Infinity;
+                
+                for (let i = 0; i < this.roadNetwork.waypoints.length; i++) {
+                    const waypoint = this.roadNetwork.waypoints[i];
+                    const dx = waypoint.x - car.mesh.position.x;
+                    const dz = waypoint.z - car.mesh.position.z;
+                    const distance = Math.sqrt(dx*dx + dz*dz);
+                    
+                    if (distance < closestDistance) {
+                        closestDistance = distance;
+                        closestWaypointIndex = i;
+                    }
+                }
+                
+                if (closestWaypointIndex === -1) return; // No waypoints found
+                
+                // Find connections from this waypoint
+                const possibleConnections = this.roadNetwork.connections.filter(conn => 
+                    conn.from === closestWaypointIndex
+                );
+                
+                if (possibleConnections.length === 0) return; // No connections
+                
+                // Pick a random next waypoint
+                const nextConn = possibleConnections[Math.floor(Math.random() * possibleConnections.length)];
+                const currentWaypoint = this.roadNetwork.waypoints[closestWaypointIndex];
+                const nextWaypoint = this.roadNetwork.waypoints[nextConn.to];
+                
+                // Set the waypoints for the car
+                car.setWaypoints(
+                    {x: currentWaypoint.x, z: currentWaypoint.z},
+                    {x: nextWaypoint.x, z: nextWaypoint.z}
+                );
+            }
+            
+            getNextWaypoint(car) {
+                // Find the car's current waypoint in the network
+                if (!car.currentWaypoint || !car.nextWaypoint) return null;
+                
+                // Find the index of the next waypoint
+                let nextWaypointIndex = -1;
+                for (let i = 0; i < this.roadNetwork.waypoints.length; i++) {
+                    const waypoint = this.roadNetwork.waypoints[i];
+                    if (Math.abs(waypoint.x - car.nextWaypoint.x) < 0.1 && 
+                        Math.abs(waypoint.z - car.nextWaypoint.z) < 0.1) {
+                        nextWaypointIndex = i;
+                        break;
+                    }
+                }
+                
+                if (nextWaypointIndex === -1) return null; // Waypoint not found
+                
+                // Find connections from this waypoint
+                const possibleConnections = this.roadNetwork.connections.filter(conn => 
+                    conn.from === nextWaypointIndex
+                );
+                
+                if (possibleConnections.length === 0) return null; // No connections
+                
+                // Pick a random next waypoint, preferring to go forward (not turn back)
+                let filteredConnections = possibleConnections;
+                
+                // If we have a current and next waypoint, calculate current direction
+                if (car.currentWaypoint && car.nextWaypoint) {
+                    const currentDir = new THREE.Vector2(
+                        car.nextWaypoint.x - car.currentWaypoint.x,
+                        car.nextWaypoint.z - car.currentWaypoint.z
+                    ).normalize();
+                    
+                    // Filter connections to prefer moving forward
+                    filteredConnections = possibleConnections.filter(conn => {
+                        const nextWaypoint = this.roadNetwork.waypoints[conn.to];
+                        const nextDir = new THREE.Vector2(
+                            nextWaypoint.x - car.nextWaypoint.x,
+                            nextWaypoint.z - car.nextWaypoint.z
+                        ).normalize();
+                        
+                        // Calculate dot product to see if direction is similar
+                        const dot = currentDir.dot(nextDir);
+                        // Prefer forward motion (dot > 0) but allow some turns
+                        return dot > -0.5; // Disallow sharp 180-degree turns
+                    });
+                    
+                    // If no good options, fall back to all possible connections
+                    if (filteredConnections.length === 0) {
+                        filteredConnections = possibleConnections;
+                    }
+                }
+                
+                // Choose a random connection from the filtered list
+                const nextConn = filteredConnections[Math.floor(Math.random() * filteredConnections.length)];
+                return this.roadNetwork.waypoints[nextConn.to];
+            }
+            
+            // Method to set the player vehicle reference
+            setPlayerVehicle(vehicle) {
+                this.playerVehicle = vehicle;
+            }
+            
+            // Method to get a traffic car at a position (for player to enter)
+            getTrafficCarAt(position, maxDistance = 5) {
+                for (const car of this.trafficCars) {
+                    if (car.mesh) {
+                        const distance = car.mesh.position.distanceTo(position);
+                        if (distance < maxDistance) {
+                            return car;
+                        }
+                    }
+                }
+                return null;
+            }
+            
+            // Remove a traffic car from management (when player takes control)
+            removeTrafficCar(car) {
+                const index = this.trafficCars.indexOf(car);
+                if (index !== -1) {
+                    this.trafficCars.splice(index, 1);
+                }
+            }
+        }
     </script>
 </body>
 </html> 
