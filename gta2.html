@@ -2,6 +2,7 @@
 <html>
 <head>
     <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>GTA 2 Clone - 3D Version</title>
     <style>
         body { 
@@ -39,6 +40,111 @@
             text-align: center;
             color: #fff;
         }
+        
+        /* Mobile touch controls */
+        #touch-controls {
+            position: absolute;
+            bottom: 50px;
+            left: 0;
+            width: 100%;
+            display: flex;
+            justify-content: space-between;
+            pointer-events: none; /* Allow clicks to pass through container but not buttons */
+        }
+        
+        /* D-pad for up/down movement only */
+        #d-pad {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            margin-left: 20px;
+            pointer-events: auto;
+        }
+        
+        /* Right side controls container */
+        #right-side-controls {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            margin-right: 20px;
+            align-items: flex-end;
+            pointer-events: auto;
+        }
+        
+        /* Left/right directional buttons */
+        #direction-buttons {
+            display: flex;
+            flex-direction: row;
+            gap: 10px;
+            pointer-events: auto;
+        }
+        
+        /* Action buttons */
+        #action-buttons {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 10px;
+            pointer-events: auto;
+        }
+        
+        /* Individual button styling */
+        .touch-button {
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            background-color: rgba(255, 255, 255, 0.3);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-size: 24px;
+            color: white;
+            user-select: none;
+            -webkit-user-select: none;
+            touch-action: manipulation;
+        }
+        
+        /* Action button styling */
+        .action-button {
+            width: 70px;
+            height: 70px;
+            border-radius: 50%;
+            background-color: rgba(255, 255, 255, 0.3);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-size: 18px;
+            color: white;
+            user-select: none;
+            -webkit-user-select: none;
+            touch-action: manipulation;
+        }
+        
+        /* Touch feedback for all buttons */
+        .touch-button:active, .action-button:active {
+            background-color: rgba(255, 255, 255, 0.5);
+        }
+        
+        /* D-pad button positions */
+        #btn-up {
+            grid-column: 2;
+            grid-row: 1;
+        }
+        
+        #btn-left {
+            grid-column: 1;
+            grid-row: 2;
+        }
+        
+        #btn-right {
+            grid-column: 3;
+            grid-row: 2;
+        }
+        
+        #btn-down {
+            grid-column: 2;
+            grid-row: 3;
+        }
     </style>
     
     <!-- Load THREE.js from CDN -->
@@ -53,6 +159,33 @@
     </div>
     <div class="control-instructions">
         Controls: WASD or Arrow Keys to move | E to enter/exit vehicles | L to toggle lights | K to toggle day/night | SPACE for handbrake/shooting | C to toggle camera view
+    </div>
+    
+    <!-- Mobile Touch Controls -->
+    <div id="touch-controls">
+        <!-- Simplified D-pad for up/down only -->
+        <div id="d-pad">
+            <div id="btn-up" class="touch-button">⬆️</div>
+            <div id="btn-down" class="touch-button">⬇️</div>
+        </div>
+        
+        <!-- Right side controls -->
+        <div id="right-side-controls">
+            <!-- Directional buttons (left/right) -->
+            <div id="direction-buttons">
+                <div id="btn-left" class="touch-button">⬅️</div>
+                <div id="btn-right" class="touch-button">➡️</div>
+            </div>
+            
+            <!-- Action buttons -->
+            <div id="action-buttons">
+                <div id="btn-action" class="action-button">E</div>
+                <div id="btn-handbrake" class="action-button">SPACE</div>
+                <div id="btn-lights" class="action-button">L</div>
+                <div id="btn-camera" class="action-button">C</div>
+                <div id="btn-day-night" class="action-button">K</div>
+            </div>
+        </div>
     </div>
     
     <script>
@@ -78,12 +211,17 @@
                 this.CAMERA_DISTANCE = 10; // Distance behind the car
                 this.CAMERA_ANGLE = 15; // Looking slightly downward (was 90 for top-down)
                 
+                // Rendering distance settings for performance
+                this.THIRDPERSON_RENDER_DISTANCE = 100; // Limited rendering in third-person mode
+                this.TOPDOWN_RENDER_DISTANCE = 300; // Larger rendering distance in top-down view
+                
                 // Top-down view constants
                 this.TOPDOWN_CAMERA_HEIGHT = 40; // Height for top-down view
                 this.TOPDOWN_CAMERA_ANGLE = 90; // Looking straight down for top-down view
+                this.TOPDOWN_PEDESTRIAN_CAMERA_HEIGHT = this.TOPDOWN_CAMERA_HEIGHT * 0.6; // 40% closer to ground in pedestrian mode
                 
                 // Camera view mode
-                this.cameraMode = 'thirdperson'; // 'thirdperson' or 'topdown'
+                this.cameraMode = 'topdown'; // Changed from 'thirdperson' to make top-down the default
                 this.canToggleCamera = true; // Prevent camera toggle spam
                 
                 // Camera inertia parameters - reduced for less lag
@@ -108,12 +246,15 @@
                 
                 // Create camera (perspective camera for 3D view)
                 this.camera = new THREE.PerspectiveCamera(
-                    75, window.innerWidth / window.innerHeight, 0.1, 1000
+                    75, window.innerWidth / window.innerHeight, 0.1, this.TOPDOWN_RENDER_DISTANCE
                 );
                 
-                // Set camera position and angle for top-down view (but with perspective)
-                this.camera.position.set(0, this.CAMERA_HEIGHT, 0);
-                this.camera.rotation.x = degToRad(-this.CAMERA_ANGLE);
+                // Set camera position and angle for top-down view
+                this.camera.position.set(0, this.TOPDOWN_CAMERA_HEIGHT, 0);
+                this.camera.rotation.x = degToRad(-this.TOPDOWN_CAMERA_ANGLE);
+                
+                // Set the initial target camera height for smooth transitions
+                this.targetCameraHeight = this.TOPDOWN_CAMERA_HEIGHT;
                 
                 // Create renderer
                 this.renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -211,7 +352,7 @@
                 this.currentVehicle = this.player; // Track which vehicle player is controlling
                 
                 // Camera transition parameters
-                this.targetCameraHeight = this.CAMERA_HEIGHT; // Target for smooth transitions
+                this.targetCameraHeight = this.TOPDOWN_CAMERA_HEIGHT; // Target for smooth transitions
                 this.cameraTransitionSpeed = 10; // Speed of camera height transitions
                 
                 // Collision rotation transition parameters
@@ -240,6 +381,118 @@
                 
                 // Setup UI elements
                 this.setupUI();
+                
+                // Initialize touch controls for mobile devices
+                this.initTouchControls();
+            }
+            
+            initTouchControls() {
+                // Helper function to simulate keyboard events
+                const simulateKeyEvent = (key, type) => {
+                    const event = new KeyboardEvent(type, {
+                        key: key,
+                        code: key.length > 1 ? key : 'Key' + key.toUpperCase(),
+                        bubbles: true
+                    });
+                    document.dispatchEvent(event);
+                };
+                
+                // Helper function to handle touch start/end for movement buttons
+                const setupMoveButton = (id, key) => {
+                    const button = document.getElementById(id);
+                    if (!button) return;
+                    
+                    // Touch start - press key
+                    button.addEventListener('touchstart', (e) => {
+                        e.preventDefault(); // Prevent scrolling
+                        simulateKeyEvent(key, 'keydown');
+                        button.style.backgroundColor = 'rgba(255, 255, 255, 0.5)'; // Visual feedback
+                    });
+                    
+                    // Touch end - release key
+                    button.addEventListener('touchend', () => {
+                        simulateKeyEvent(key, 'keyup');
+                        button.style.backgroundColor = 'rgba(255, 255, 255, 0.3)';
+                    });
+                    
+                    // Touch cancel - release key
+                    button.addEventListener('touchcancel', () => {
+                        simulateKeyEvent(key, 'keyup');
+                        button.style.backgroundColor = 'rgba(255, 255, 255, 0.3)';
+                    });
+                };
+                
+                // Setup movement buttons
+                setupMoveButton('btn-up', 'w');
+                setupMoveButton('btn-down', 's');
+                setupMoveButton('btn-left', 'a');
+                setupMoveButton('btn-right', 'd');
+                
+                // Setup action buttons with cooldown handling
+                const setupActionButton = (id, key, cooldownTime = 500) => {
+                    const button = document.getElementById(id);
+                    if (!button) return;
+                    
+                    let isCooldown = false;
+                    
+                    button.addEventListener('touchstart', (e) => {
+                        e.preventDefault();
+                        if (isCooldown) return;
+                        
+                        simulateKeyEvent(key, 'keydown');
+                        button.style.backgroundColor = 'rgba(255, 255, 255, 0.5)';
+                        
+                        // Special handling for handbrake (Space) - keydown only
+                        if (key === ' ') {
+                            this.keys[' '] = true;
+                            return;
+                        }
+                        
+                        // Add cooldown for toggle actions
+                        isCooldown = true;
+                        setTimeout(() => {
+                            isCooldown = false;
+                            button.style.backgroundColor = 'rgba(255, 255, 255, 0.3)';
+                        }, cooldownTime);
+                    });
+                    
+                    // Only add touchend for handbrake/space
+                    if (key === ' ') {
+                        button.addEventListener('touchend', () => {
+                            simulateKeyEvent(key, 'keyup');
+                            this.keys[' '] = false;
+                            button.style.backgroundColor = 'rgba(255, 255, 255, 0.3)';
+                        });
+                        
+                        button.addEventListener('touchcancel', () => {
+                            simulateKeyEvent(key, 'keyup');
+                            this.keys[' '] = false;
+                            button.style.backgroundColor = 'rgba(255, 255, 255, 0.3)';
+                        });
+                    }
+                };
+                
+                // Setup action buttons
+                setupActionButton('btn-action', 'e');
+                setupActionButton('btn-handbrake', ' '); // Space key
+                setupActionButton('btn-lights', 'l');
+                setupActionButton('btn-camera', 'c');
+                setupActionButton('btn-day-night', 'k');
+                
+                // Show/hide touch controls based on screen width and touch capability
+                this.updateTouchControlsVisibility();
+                window.addEventListener('resize', () => this.updateTouchControlsVisibility());
+            }
+            
+            updateTouchControlsVisibility() {
+                const touchControls = document.getElementById('touch-controls');
+                if (!touchControls) return;
+                
+                // Show controls on mobile/touch devices or smaller screens
+                const isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+                const isSmallScreen = window.innerWidth < 1024;
+                
+                touchControls.style.display = (isTouchDevice || isSmallScreen) ? 'flex' : 'none';
             }
             
             onWindowResize() {
@@ -449,6 +702,8 @@
                 
                 // Setup keyboard controls
                 this.keys = {};
+                // Use document instead of window for the keydown/keyup events
+                // to capture both real keyboard events and simulated events from touch controls
                 document.addEventListener('keydown', (e) => this.onKeyDown(e));
                 document.addEventListener('keyup', (e) => this.onKeyUp(e));
             }
@@ -490,12 +745,18 @@
                     this.ambientLight.intensity = 0.5; // Bright ambient light
                     this.scene.background = new THREE.Color(0x87ceeb); // Sky blue
                     
-                    // Remove fog or make it minimal during day
+                    // Remove fog or make it minimal during day - adjust based on camera mode
                     if (!this.scene.fog) {
-                        this.scene.fog = new THREE.Fog(this.scene.background, 10, 100);
+                        this.scene.fog = new THREE.Fog(this.scene.background, 10, 
+                            this.cameraMode === 'thirdperson' ? this.THIRDPERSON_RENDER_DISTANCE * 0.9 : this.TOPDOWN_RENDER_DISTANCE * 0.8);
                     } else {
                         this.scene.fog.color = this.scene.background;
-                        this.scene.fog.far = 100; // Better visibility during day
+                        // Adjust fog distance based on camera mode
+                        if (this.cameraMode === 'thirdperson') {
+                            this.scene.fog.far = this.THIRDPERSON_RENDER_DISTANCE * 0.9; // Shorter fog distance in third-person
+                        } else {
+                            this.scene.fog.far = this.TOPDOWN_RENDER_DISTANCE * 0.8; // Longer fog distance in top-down
+                        }
                     }
                 } else {
                     // Nighttime lighting - less dark than before
@@ -504,12 +765,18 @@
                     this.ambientLight.intensity = 0.25; // Increased ambient light (was 0.1)
                     this.scene.background = new THREE.Color(0x0a1a40); // Slightly lighter dark blue (was 0x0a1a2a)
                     
-                    // Add fog at night for atmosphere
+                    // Add fog at night for atmosphere - adjust based on camera mode
                     if (!this.scene.fog) {
-                        this.scene.fog = new THREE.Fog(this.scene.background, 10, 60);
+                        this.scene.fog = new THREE.Fog(this.scene.background, 10, 
+                            this.cameraMode === 'thirdperson' ? this.THIRDPERSON_RENDER_DISTANCE * 0.6 : this.TOPDOWN_RENDER_DISTANCE * 0.5);
                     } else {
                         this.scene.fog.color = this.scene.background;
-                        this.scene.fog.far = 60; // Reduced visibility at night but not too much
+                        // Adjust fog distance based on camera mode
+                        if (this.cameraMode === 'thirdperson') {
+                            this.scene.fog.far = this.THIRDPERSON_RENDER_DISTANCE * 0.6; // Even shorter fog at night in third-person
+                        } else {
+                            this.scene.fog.far = this.TOPDOWN_RENDER_DISTANCE * 0.5; // Reduced distance at night in top-down
+                        }
                     }
                     
                     // Auto-toggle headlights at night if they're off
@@ -1949,12 +2216,12 @@
             createPlayerVehicle() {
                 // Create a simple group to hold car parts
                 this.player = new THREE.Group();
-                this.player.position.set(0, 0.5, 0);
+                this.player.position.set(0, 0, 0);
                 this.scene.add(this.player);
                 
                 // Car dimensions - sporty profile
-                const carWidth = 2.0;
-                const carHeight = 0.4; // Very low profile for a sports car
+                const carWidth = 2.0 * 0.98; // 2% narrower than before
+                const carHeight = 0.6; // Very low profile for a sports car
                 const carLength = 4.2;
                 
                 // Main body - low and sleek
@@ -1966,15 +2233,15 @@
                 });
                 
                 const carBody = new THREE.Mesh(bodyGeometry, bodyMaterial);
-                carBody.position.y = carHeight/2 + 0.1;
+                carBody.position.y = carHeight/2 + 0.25; // Positioned higher (was 0.1)
                 carBody.castShadow = true;
                 carBody.receiveShadow = true;
                 this.player.add(carBody);
                 
                 // Add roof section (smaller than body for sporty look)
-                const roofWidth = carWidth * 0.6;
-                const roofHeight = 0.25;
-                const roofLength = carLength * 0.45;
+                const roofWidth = carWidth * 0.8;
+                const roofHeight = 0.4;
+                const roofLength = carLength * 0.55;
                 
                 const roofGeometry = new THREE.BoxGeometry(roofWidth, roofHeight, roofLength);
                 const roofMaterial = new THREE.MeshStandardMaterial({ 
@@ -1984,7 +2251,7 @@
                 });
                 
                 const roof = new THREE.Mesh(roofGeometry, roofMaterial);
-                roof.position.y = carHeight + roofHeight/2 + 0.1;
+                roof.position.y = carHeight + roofHeight/2 + 0.25; // Adjusted to match the new body height
                 roof.position.z = -carLength * 0.05; // Slightly forward from center
                 roof.castShadow = true;
                 this.player.add(roof);
@@ -2002,7 +2269,7 @@
                 const windshieldGeometry = new THREE.PlaneGeometry(roofWidth * 0.9, roofLength * 0.3);
                 const windshield = new THREE.Mesh(windshieldGeometry, windowMaterial);
                 windshield.rotation.x = degToRad(-90);
-                windshield.position.set(0, carHeight + roofHeight + 0.02, -roofLength * 0.5);
+                windshield.position.set(0, carHeight + roofHeight + 0.02 + 0.15, -roofLength * 0.5);
                 this.player.add(windshield);
                 
                 // Rear window
@@ -2016,7 +2283,7 @@
                 // Left side window
                 const leftWindow = new THREE.Mesh(sideWindowGeometry, windowMaterial);
                 leftWindow.rotation.y = degToRad(90);
-                leftWindow.position.set(-roofWidth/2 - 0.01, carHeight + roofHeight/2 + 0.1, 0);
+                leftWindow.position.set(-roofWidth/2 - 0.01, carHeight + roofHeight/2 + 0.25, 0);
                 this.player.add(leftWindow);
                 
                 // Right side window
@@ -2033,7 +2300,7 @@
                 });
                 
                 const frontDetail = new THREE.Mesh(frontDetailGeometry, frontDetailMaterial);
-                frontDetail.position.set(0, carHeight * 0.3, -carLength/2 - 0.05);
+                frontDetail.position.set(0, carHeight * 0.3 + 0.15, -carLength/2 - 0.05);
                 this.player.add(frontDetail);
                 
                 // Rear spoiler - important visual element for top-down view
@@ -2049,13 +2316,13 @@
                 });
                 
                 const spoiler = new THREE.Mesh(spoilerGeometry, spoilerMaterial);
-                spoiler.position.set(0, carHeight + roofHeight * 0.5, carLength/2 - spoilerDepth/2);
+                spoiler.position.set(0, carHeight + roofHeight * 0.5 + 0.15, carLength/2 - spoilerDepth/2);
                 this.player.add(spoiler);
                 
                 // Spoiler stands
                 const standGeometry = new THREE.BoxGeometry(0.1, spoilerHeight * 2, spoilerDepth/2);
                 const leftStand = new THREE.Mesh(standGeometry, spoilerMaterial);
-                leftStand.position.set(-spoilerWidth/2 + 0.1, carHeight + spoilerHeight/2, carLength/2 - spoilerDepth/2);
+                leftStand.position.set(-spoilerWidth/2 + 0.1, carHeight + spoilerHeight/2 + 0.15, carLength/2 - spoilerDepth/2);
                 this.player.add(leftStand);
                 
                 const rightStand = leftStand.clone();
@@ -2072,7 +2339,7 @@
                 
                 // Left headlight
                 const leftHeadlight = new THREE.Mesh(headlightGeometry, headlightMaterial);
-                leftHeadlight.position.set(-carWidth * 0.3, carHeight * 0.5, -carLength/2 - 0.06);
+                leftHeadlight.position.set(-carWidth * 0.3, carHeight * 0.5 + 0.15, -carLength/2 - 0.06);
                 this.player.add(leftHeadlight);
                 
                 // Right headlight
@@ -2093,7 +2360,7 @@
                 
                 // Left taillight
                 const leftTaillight = new THREE.Mesh(taillightGeometry, taillightMaterial);
-                leftTaillight.position.set(-carWidth * 0.3, carHeight * 0.5, carLength/2 + 0.06);
+                leftTaillight.position.set(-carWidth * 0.3, carHeight * 0.5 + 0.15, carLength/2 + 0.06);
                 this.player.add(leftTaillight);
                 
                 // Right taillight
@@ -2176,8 +2443,13 @@
                     this.lastVehicleRotation = this.currentVehicle.rotation.y;
                     // Reset vehicle velocity when exiting
                     this.playerVelocity = 0;
-                    // Set camera height for pedestrian view
-                    this.targetCameraHeight = 3; // Lower height for third-person pedestrian view (was 25)
+                    
+                    // Set camera height based on current mode
+                    if (this.cameraMode === 'topdown') {
+                        this.targetCameraHeight = this.TOPDOWN_PEDESTRIAN_CAMERA_HEIGHT;
+                    } else {
+                        this.targetCameraHeight = 3; // Lower height for third-person pedestrian view (was 25)
+                    }
                     
                     // Reset camera rotation to match pedestrian initial direction
                     this.cameraTargetRotation = this.pedestrian.rotation.y;
@@ -2207,8 +2479,12 @@
                         // Update player's collision object to point to the new vehicle
                         this.trafficManager.setPlayerVehicle(this.currentVehicle);
                         
-                        // Set camera height for vehicle view
-                        this.targetCameraHeight = this.CAMERA_HEIGHT;
+                        // Set camera height based on current mode
+                        if (this.cameraMode === 'topdown') {
+                            this.targetCameraHeight = this.TOPDOWN_CAMERA_HEIGHT;
+                        } else {
+                            this.targetCameraHeight = this.CAMERA_HEIGHT;
+                        }
                         
                         // Reset camera rotation to match vehicle initial direction
                         this.cameraTargetRotation = this.currentVehicle.rotation.y;
@@ -2234,8 +2510,12 @@
                             // Update player's collision object in traffic manager
                             this.trafficManager.setPlayerVehicle(this.currentVehicle);
                             
-                            // Set camera height for vehicle view
-                            this.targetCameraHeight = this.CAMERA_HEIGHT;
+                            // Set camera height based on current mode
+                            if (this.cameraMode === 'topdown') {
+                                this.targetCameraHeight = this.TOPDOWN_CAMERA_HEIGHT;
+                            } else {
+                                this.targetCameraHeight = this.CAMERA_HEIGHT;
+                            }
                             
                             // Reset camera rotation to match vehicle initial direction
                             this.cameraTargetRotation = this.currentVehicle.rotation.y;
@@ -4164,7 +4444,19 @@
                 if (this.cameraMode === 'thirdperson') {
                     // Switch to top-down view
                     this.cameraMode = 'topdown';
-                    this.targetCameraHeight = this.TOPDOWN_CAMERA_HEIGHT;
+                    // Use different heights for vehicle vs pedestrian
+                    if (this.isInVehicle) {
+                        this.targetCameraHeight = this.TOPDOWN_CAMERA_HEIGHT;
+                    } else {
+                        this.targetCameraHeight = this.TOPDOWN_PEDESTRIAN_CAMERA_HEIGHT;
+                    }
+                    
+                    // Increase rendering distance for top-down view
+                    this.camera.far = this.TOPDOWN_RENDER_DISTANCE;
+                    this.camera.updateProjectionMatrix();
+                    
+                    // Update fog to match camera mode
+                    this.updateLighting(0);
                     
                     // Update info text
                     document.getElementById('info').textContent = "GTA 2 Clone - Top-Down View (Press C to toggle)";
@@ -4172,6 +4464,13 @@
                     // Switch to third-person view
                     this.cameraMode = 'thirdperson';
                     this.targetCameraHeight = this.CAMERA_HEIGHT;
+                    
+                    // Decrease rendering distance for third-person view (optimization)
+                    this.camera.far = this.THIRDPERSON_RENDER_DISTANCE;
+                    this.camera.updateProjectionMatrix();
+                    
+                    // Update fog to match camera mode
+                    this.updateLighting(0);
                     
                     // Update info text
                     document.getElementById('info').textContent = "GTA 2 Clone - Third-Person View (Press C to toggle)";
